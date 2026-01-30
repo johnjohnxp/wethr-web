@@ -46,7 +46,6 @@ CITY_PRESETS = [
     CityConfig("Miami", "KMIA", "KMIA", "America/New_York", "MFL/64,31", "25.7617,-80.1918"),
 ]
 
-# ============= HELPERS & FETCH (same as before) =============
 def auth_headers():
     return {"X-API-Key": API_KEY}
 
@@ -68,12 +67,62 @@ def fetch_data(url, params):
         st.error(f"API error: {e}")
         return {}
 
-# ... (keep your fetch_observed_high, fetch_nws_high, fetch_model_forecasts, fetch_nws_gridpoint functions here)
+def fetch_observed_high(city):
+    params = {"station_code": city.station_code, "mode": "wethr_high", "logic": "nws"}
+    return fetch_data(OBS_URL, params)
+
+def fetch_nws_high(city):
+    params = {"station_code": city.station_code, "mode": "latest"}
+    return fetch_data(NWS_URL, params)
+
+def fetch_model_forecasts(city):
+    start_iso, end_iso = todays_local_day_range_utc(city.timezone)
+    params = {
+        "location_name": city.location_name,
+        "start_valid_time": start_iso,
+        "end_valid_time": end_iso,
+        "mode": "hourly"
+    }
+    data = fetch_data(FORECASTS_URL, params)
+    records = data.get("data", data) if isinstance(data, dict) else data
+    model_highs = {m: None for m in TARGET_MODELS}
+    for rec in records:
+        model = rec.get("model")
+        if model not in TARGET_MODELS: continue
+        temp_raw = rec.get("temperature_f")
+        if temp_raw is None: continue
+        try:
+            temp = float(temp_raw)
+        except: continue
+        if model_highs[model] is None or temp > model_highs[model]:
+            model_highs[model] = temp
+    return {m: v for m, v in model_highs.items() if v is not None}
+
+def fetch_nws_gridpoint(city):
+    try:
+        point_url = f"https://api.weather.gov/points/{city.lat_lon}"
+        headers = {"User-Agent": "WethrHelper"}
+        r = requests.get(point_url, headers=headers, timeout=10)
+        r.raise_for_status()
+        point_data = r.json()["properties"]
+        forecast_url = point_data["forecast"]
+        r = requests.get(forecast_url, headers=headers, timeout=10)
+        r.raise_for_status()
+        periods = r.json()["properties"]["periods"]
+        today_high = None
+        for p in periods:
+            if "temperature" in p and ("afternoon" in p["name"].lower() or "today" in p["name"].lower()):
+                today_high = p["temperature"]
+                break
+        return float(today_high) if today_high else None
+    except Exception as e:
+        st.warning(f"NWS gridpoint error: {e}")
+        return None
 
 # ============= STREAMLIT APP =============
 st.set_page_config(page_title="Wethr Helper", layout="wide")
 st.title("Wethr Helper Dashboard")
-st.caption("Latest weather blends, NWS backup, Kalshi markets, and predictions. Refreshes on page load or button press.")
+st.caption("Latest weather blends, NWS backup, and Kalshi comparison. Refreshes on page load or button press.")
 
 selected_cities = st.multiselect("Select Cities", [c.name for c in CITY_PRESETS], default=["Miami", "Seattle"])
 
@@ -121,44 +170,35 @@ else:
             band = (center - 1, center + 1)
             prob_in_band = 68 if std < 1.5 else 50 if std < 2.5 else 30
 
-            # ============= FULL SUMMARY IN BOXES =============
+            # Summary metrics
             col1, col2, col3 = st.columns(3)
-            col1.metric("Blend (weighted)", f"{blend:.1f}°F", delta=None)
-            col2.metric("Spread / Std", f"{spread:.1f}°F / {std:.1f}°F")
-            col3.metric("Confidence in band", f"~{prob_in_band}%")
+            col1.metric("Blend", f"{blend:.1f}°F")
+            col2.metric("Spread", f"{spread:.1f}°F")
+            col3.metric("Confidence", f"~{prob_in_band}%")
 
-            st.subheader("Status & Changes")
             st.markdown(f"**Status:** {status}")
-            st.markdown(f"NWS vs blend diff: {diff_nws:.1f}°F" if diff_nws is not None else "N/A")
-
             if status == "GREEN":
                 st.success("✅ GREEN — models + NWS tightly aligned.")
             elif status == "YELLOW":
-                st.warning("🟡 YELLOW — usable but not ideal; size carefully.")
+                st.warning("🟡 YELLOW — usable but not ideal.")
             else:
-                st.error("🔴 RED — noisy setup; consider skipping or tiny size only.")
+                st.error("🔴 RED — noisy setup.")
 
-            st.subheader("Suggested Range & Bins")
+            st.markdown("**Model Highs**")
+            model_data = [{"Model": m, "High": f"{model_highs.get(m, 'N/A'):.1f}°F" if model_highs.get(m) else "N/A"} for m in TARGET_MODELS]
+            st.table(pd.DataFrame(model_data))
+
+            st.markdown("**Suggested Range**")
             st.markdown(f"Comfort band: **{band[0]}–{band[1]}°F**")
-            st.markdown(f"Primary bin: **{center}–{center+1}°F**")
-            st.markdown(f"Secondary bin: **{center-1}–{center}°F**")
 
-            st.subheader("Bin Lean Guide (YES/NO)")
-            # Simple list (expand if needed)
-            st.markdown("- Low bins below obs: INVALID")
-            st.markdown(f"- Primary ({center}–{center+1}): LEAN YES")
-            st.markdown(f"- Secondary: SMALL YES / avoid NO")
+            st.markdown("**Exact & Safe**")
+            st.markdown(f"Exact: **{center}–{center+1}°F YES** (A/B grade)")
+            st.markdown(f"Safe: **{center+4}°F or below YES** (B SAFE)")
 
-            st.subheader("Exact & Safe Calls")
-            st.markdown(f"Exact: **71–72°F YES — A (centered)**")  # update dynamically if needed
-            st.markdown(f"Safe: **75°F or below YES — B SAFE**")
+            st.markdown("**Kalshi Snapshot**")
+            st.markdown("Loading Kalshi... (full integration coming soon)")
 
-            st.subheader("Kalshi Market Snapshot")
-            # Add real fetch later; for now placeholder
-            st.markdown("Kalshi data loading... (full snapshot coming soon)")
-
-            st.subheader("Timing Note")
-            # Add real timing note function if needed
+            st.markdown("**Timing Note**")
             st.markdown("Late in the day; high likely close to final.")
 
     st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (refreshes on page load)")
