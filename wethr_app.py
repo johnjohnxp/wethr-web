@@ -20,7 +20,7 @@ except ImportError:
 
 from dataclasses import dataclass
 
-# CONFIG
+# CONFIG (same as before)
 API_KEY = "570b45680d41097ee46550e36f7c1290754081becee8955529b0d197cf9d8efd"
 OBS_URL = "https://wethr.net/api/v2/observations.php"
 FORECASTS_URL = "https://wethr.net/api/v2/forecasts.php"
@@ -208,21 +208,24 @@ st.set_page_config(page_title="Wethr Helper", layout="wide")
 st.title("Wethr Helper Dashboard")
 st.caption("Latest weather blends, NWS backup, and Kalshi markets. GREEN cities expand automatically on load. Refreshes on page load or button press.")
 
-# Sidebar auto-refresh (Off by default)
-st.sidebar.header("Auto-Refresh")
-refresh_interval = st.sidebar.selectbox(
-    "Refresh every",
-    options=["Off", "5 minutes", "10 minutes", "15 minutes", "30 minutes"],
-    index=0  # Default Off
-)
+# Top auto-refresh selector (small & sleek)
+col_refresh1, col_refresh2 = st.columns([3, 1])
+with col_refresh1:
+    refresh_interval = st.selectbox(
+        "Auto-refresh",
+        options=["Off", "5 min", "10 min", "15 min", "30 min"],
+        index=0,  # Default Off
+        label_visibility="collapsed",
+        key="refresh_select"
+    )
 
 if refresh_interval != "Off":
-    interval_map = {"5 minutes": 300, "10 minutes": 600, "15 minutes": 900, "30 minutes": 1800}
+    interval_map = {"5 min": 300, "10 min": 600, "15 min": 900, "30 min": 1800}
     interval_seconds = interval_map[refresh_interval]
-    placeholder = st.sidebar.empty()
-    placeholder.info(f"Auto-refreshing every {refresh_interval}. Next update in...")
-    
-    # Non-blocking countdown
+    countdown_placeholder = st.empty()
+    countdown_placeholder.markdown(f"Next refresh in...")
+
+    # Non-blocking JS countdown
     countdown_js = f"""
     <script>
     const seconds = {interval_seconds};
@@ -238,7 +241,7 @@ if refresh_interval != "Off":
     </script>
     <div id="countdown"></div>
     """
-    placeholder.markdown(countdown_js, unsafe_allow_html=True)
+    countdown_placeholder.markdown(countdown_js, unsafe_allow_html=True)
 
 selected_cities = st.multiselect("Select Cities", [c.name for c in CITY_PRESETS], default=["Miami", "Seattle"])
 
