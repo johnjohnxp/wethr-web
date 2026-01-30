@@ -11,7 +11,6 @@ import warnings
 
 warnings.filterwarnings("ignore", category=Warning)
 
-# ZoneInfo fallback
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -21,7 +20,7 @@ except ImportError:
 
 from dataclasses import dataclass
 
-# ============= CONFIG =============
+# CONFIG
 API_KEY = "570b45680d41097ee46550e36f7c1290754081becee8955529b0d197cf9d8efd"
 OBS_URL = "https://wethr.net/api/v2/observations.php"
 FORECASTS_URL = "https://wethr.net/api/v2/forecasts.php"
@@ -207,7 +206,7 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
 # ============= STREAMLIT APP =============
 st.set_page_config(page_title="Wethr Helper", layout="wide")
 st.title("Wethr Helper Dashboard")
-st.caption("Latest weather blends, NWS backup, and Kalshi markets. Refreshes on page load or button press.")
+st.caption("Latest weather blends, NWS backup, and Kalshi markets. Refreshes on page load or button press. GREEN states expand automatically.")
 
 # Sidebar auto-refresh (Off by default)
 st.sidebar.header("Auto-Refresh")
@@ -223,7 +222,7 @@ if refresh_interval != "Off":
     placeholder = st.sidebar.empty()
     placeholder.info(f"Auto-refreshing every {refresh_interval}. Next update in...")
     
-    # Non-blocking countdown
+    # Non-blocking countdown with JS
     countdown_js = f"""
     <script>
     const seconds = {interval_seconds};
@@ -252,44 +251,58 @@ else:
     summary_data = []
     for city_name in selected_cities:
         city = next(c for c in CITY_PRESETS if c.name == city_name)
-        with st.expander(f"📍 {city.name} - Detailed Report", expanded=True):
-            obs = fetch_observed_high(city)
-            nws = fetch_nws_high(city)
-            model_highs, model_hourly = fetch_model_forecasts(city)
-            nws_high = float(nws.get("high")) if nws and nws.get("high") else None
-            nws_grid = fetch_nws_gridpoint(city)
-            obs_high = obs.get("wethr_high") if obs else None
-            obs_high_f = float(obs_high) if obs_high else None
+        # Fetch data
+        obs = fetch_observed_high(city)
+        nws = fetch_nws_high(city)
+        model_highs, model_hourly = fetch_model_forecasts(city)
+        nws_high = float(nws.get("high")) if nws and nws.get("high") else None
+        nws_grid = fetch_nws_gridpoint(city)
+        obs_high = obs.get("wethr_high") if obs else None
+        obs_high_f = float(obs_high) if obs_high else None
 
-            if len(model_highs) < 3:
-                st.error("Insufficient models for blend.")
-                continue
+        if len(model_highs) < 3:
+            summary_data.append({"City": city_name, "Blend": "N/A", "Spread": "N/A", "Status": "ERROR", "Band": "N/A", "Confidence": "N/A", "Observed": "N/A", "Kalshi": "N/A"})
+            continue
 
-            vals = list(model_highs.values())
-            weights = MODEL_WEIGHTS_BASE.copy()
-            now_hour = datetime.now(ZoneInfo(city.timezone)).hour
-            if now_hour > 12:
-                weights['HRRR'] += 0.1
-                weights['NAM'] += 0.1
-                total = sum(weights.values())
-                weights = {k: v/total for k, v in weights.items()}
-            blend = sum(weights.get(m, 0) * model_highs.get(m, 0) for m in TARGET_MODELS)
-            spread = max(vals) - min(vals)
-            std = stdev(vals) if len(vals) > 1 else 0
+        vals = list(model_highs.values())
+        weights = MODEL_WEIGHTS_BASE.copy()
+        now_hour = datetime.now(ZoneInfo(city.timezone)).hour
+        if now_hour > 12:
+            weights['HRRR'] += 0.1
+            weights['NAM'] += 0.1
+            total = sum(weights.values())
+            weights = {k: v/total for k, v in weights.items()}
+        blend = sum(weights.get(m, 0) * model_highs.get(m, 0) for m in TARGET_MODELS)
+        spread = max(vals) - min(vals)
+        std = stdev(vals) if len(vals) > 1 else 0
 
-            if nws_grid:
-                blend = 0.7 * blend + 0.3 * nws_grid
+        if nws_grid:
+            blend = 0.7 * blend + 0.3 * nws_grid
 
-            diff_nws = abs(blend - nws_high) if nws_high else None
-            status = "GREEN" if spread <= 3.0 and (diff_nws or 999) <= 1.5 else \
-                     "YELLOW" if spread <= 4.0 and (diff_nws or 999) <= 2.0 else "RED"
+        diff_nws = abs(blend - nws_high) if nws_high else None
+        status = "GREEN" if spread <= 3.0 and (diff_nws or 999) <= 1.5 else \
+                 "YELLOW" if spread <= 4.0 and (diff_nws or 999) <= 2.0 else "RED"
 
-            center = round(blend)
-            band = (center - 1, center + 1)
-            prob_in_band = 68 if std < 1.5 else 50 if std < 2.5 else 30
+        center = round(blend)
+        band = (center - 1, center + 1)
+        prob_in_band = 68 if std < 1.5 else 50 if std < 2.5 else 30
 
-            kalshi_snapshot = fetch_kalshi_market(city_name, blend, status, "TODO exact", "TODO safe", "TODO grade")
+        kalshi_snapshot = fetch_kalshi_market(city_name, blend, status, "TODO exact", "TODO safe", "TODO grade")
 
+        # Collect for summary table
+        summary_data.append({
+            "City": city_name,
+            "Blend": f"{blend:.1f}°F",
+            "Spread": f"{spread:.1f}°F",
+            "Status": status,
+            "Band": f"{band[0]}–{band[1]}°F",
+            "Confidence": f"~{prob_in_band}%",
+            "Observed": f"{obs_high_f or 'N/A'}°F",
+            "Kalshi": kalshi_snapshot[:200] + "..." if kalshi_snapshot else "N/A"
+        })
+
+        # City expander - expand automatically if GREEN
+        with st.expander(f"📍 {city.name} - Detailed Report", expanded=(status == "GREEN")):
             # Metrics row
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Blend", f"{blend:.1f}°F")
@@ -305,43 +318,30 @@ else:
             else:
                 st.error("🔴 RED — noisy setup.")
 
-            # Extra details expander
-            with st.expander("Extra Details & Notes"):
-                st.markdown("**Model Highs**")
-                model_df = pd.DataFrame([
-                    {"Model": m, "High": f"{model_highs.get(m, 'N/A'):.1f}°F" if model_highs.get(m) else "N/A"}
-                    for m in TARGET_MODELS
-                ])
-                st.table(model_df)
+            # Extra details
+            st.markdown("**Model Highs**")
+            model_df = pd.DataFrame([
+                {"Model": m, "High": f"{model_highs.get(m, 'N/A'):.1f}°F" if model_highs.get(m) else "N/A"}
+                for m in TARGET_MODELS
+            ])
+            st.table(model_df)
 
-                st.markdown("**Suggested Range**")
-                st.markdown(f"Comfort band: **{band[0]}–{band[1]}°F**")
+            st.markdown("**Suggested Range**")
+            st.markdown(f"Comfort band: **{band[0]}–{band[1]}°F**")
 
-                st.markdown("**Bin Lean Guide**")
-                st.markdown("- Primary: LEAN YES")
-                st.markdown("- Secondary: SMALL YES / avoid NO")
+            st.markdown("**Bin Lean Guide**")
+            st.markdown("- Primary: LEAN YES")
+            st.markdown("- Secondary: SMALL YES / avoid NO")
 
-                st.markdown("**Exact & Safe**")
-                st.markdown(f"Exact: **{center}–{center+1}°F YES** (A/B grade)")
-                st.markdown(f"Safe: **{center+4}°F or below YES** (B SAFE)")
+            st.markdown("**Exact & Safe**")
+            st.markdown(f"Exact: **{center}–{center+1}°F YES** (A/B grade)")
+            st.markdown(f"Safe: **{center+4}°F or below YES** (B SAFE)")
 
-                st.markdown("**Timing Note**")
-                st.markdown("Late in the day; high likely close to final.")
+            st.markdown("**Timing Note**")
+            st.markdown("Late in the day; high likely close to final.")
 
-                st.markdown("**Full Kalshi Snapshot**")
-                st.markdown(kalshi_snapshot)
-
-            # Collect for bottom summary
-            summary_data.append({
-                "City": city_name,
-                "Blend": blend,
-                "Spread": spread,
-                "Status": status,
-                "Band": f"{band[0]}–{band[1]}°F",
-                "Confidence": prob_in_band,
-                "Observed": obs_high_f or "N/A",
-                "Kalshi": kalshi_snapshot[:200] + "..." if kalshi_snapshot else "N/A"
-            })
+            st.markdown("**Full Kalshi Snapshot**")
+            st.markdown(kalshi_snapshot)
 
     # Bottom summary box (best to worst)
     if summary_data:
