@@ -206,7 +206,7 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
 # ============= STREAMLIT APP =============
 st.set_page_config(page_title="Wethr Helper", layout="wide")
 st.title("Wethr Helper Dashboard")
-st.caption("Latest weather blends, NWS backup, and Kalshi markets. Refreshes on page load or button press. GREEN states expand automatically.")
+st.caption("Latest weather blends, NWS backup, and Kalshi markets. GREEN cities expand automatically on load. Refreshes on page load or button press.")
 
 # Sidebar auto-refresh (Off by default)
 st.sidebar.header("Auto-Refresh")
@@ -222,7 +222,7 @@ if refresh_interval != "Off":
     placeholder = st.sidebar.empty()
     placeholder.info(f"Auto-refreshing every {refresh_interval}. Next update in...")
     
-    # Non-blocking countdown with JS
+    # Non-blocking countdown
     countdown_js = f"""
     <script>
     const seconds = {interval_seconds};
@@ -251,7 +251,8 @@ else:
     summary_data = []
     for city_name in selected_cities:
         city = next(c for c in CITY_PRESETS if c.name == city_name)
-        # Fetch data
+
+        # Fetch data first to determine status
         obs = fetch_observed_high(city)
         nws = fetch_nws_high(city)
         model_highs, model_hourly = fetch_model_forecasts(city)
@@ -301,7 +302,7 @@ else:
             "Kalshi": kalshi_snapshot[:200] + "..." if kalshi_snapshot else "N/A"
         })
 
-        # City expander - expand automatically if GREEN
+        # City expander - auto-expand if GREEN
         with st.expander(f"📍 {city.name} - Detailed Report", expanded=(status == "GREEN")):
             # Metrics row
             col1, col2, col3, col4 = st.columns(4)
