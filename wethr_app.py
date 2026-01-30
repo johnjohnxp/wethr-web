@@ -4,7 +4,6 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from statistics import stdev
-from collections import Counter
 import requests
 import re
 import pandas as pd
@@ -12,7 +11,7 @@ import warnings
 
 warnings.filterwarnings("ignore", category=Warning)
 
-# ZoneInfo fallback for compatibility
+# ZoneInfo fallback
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -102,7 +101,7 @@ def fetch_model_forecasts(city):
         if model_highs[model] is None or temp > model_highs[model]:
             model_highs[model] = temp
     highs = {m: v for m, v in model_highs.items() if v is not None}
-    return highs, model_hourly  # Return both for unpacking
+    return highs, model_hourly
 
 def fetch_nws_gridpoint(city):
     try:
@@ -125,7 +124,6 @@ def fetch_nws_gridpoint(city):
         st.warning(f"NWS gridpoint error: {e}")
         return None
 
-# ============= KALSHI FETCH =============
 def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, exact_grade):
     KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
     series_ticker_map = {
@@ -211,19 +209,37 @@ st.set_page_config(page_title="Wethr Helper", layout="wide")
 st.title("Wethr Helper Dashboard")
 st.caption("Latest weather blends, NWS backup, and Kalshi markets. Refreshes on page load or button press.")
 
-# Sidebar auto-refresh
+# Sidebar auto-refresh (Off by default)
 st.sidebar.header("Auto-Refresh")
 refresh_interval = st.sidebar.selectbox(
     "Refresh every",
     options=["Off", "5 minutes", "10 minutes", "15 minutes", "30 minutes"],
-    index=3  # Default 15 min
+    index=0  # Default Off
 )
 
 if refresh_interval != "Off":
     interval_map = {"5 minutes": 300, "10 minutes": 600, "15 minutes": 900, "30 minutes": 1800}
-    st.sidebar.info(f"Auto-refreshing every {refresh_interval}. Next in ~{interval_map[refresh_interval]//60} min.")
-    time.sleep(interval_map[refresh_interval])
-    st.rerun()
+    interval_seconds = interval_map[refresh_interval]
+    placeholder = st.sidebar.empty()
+    placeholder.info(f"Auto-refreshing every {refresh_interval}. Next update in...")
+    
+    # Non-blocking countdown
+    countdown_js = f"""
+    <script>
+    const seconds = {interval_seconds};
+    let remaining = seconds;
+    const timer = setInterval(() => {{
+        remaining--;
+        document.getElementById("countdown").innerText = Math.floor(remaining / 60) + " min " + (remaining % 60) + " sec";
+        if (remaining <= 0) {{
+            clearInterval(timer);
+            window.location.reload();
+        }}
+    }}, 1000);
+    </script>
+    <div id="countdown"></div>
+    """
+    placeholder.markdown(countdown_js, unsafe_allow_html=True)
 
 selected_cities = st.multiselect("Select Cities", [c.name for c in CITY_PRESETS], default=["Miami", "Seattle"])
 
@@ -274,7 +290,7 @@ else:
 
             kalshi_snapshot = fetch_kalshi_market(city_name, blend, status, "TODO exact", "TODO safe", "TODO grade")
 
-            # Metrics
+            # Metrics row
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Blend", f"{blend:.1f}°F")
             col2.metric("Spread", f"{spread:.1f}°F")
