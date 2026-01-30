@@ -19,7 +19,7 @@ except ImportError:
 
 from dataclasses import dataclass
 
-# CONFIG (same as before)
+# CONFIG
 API_KEY = "570b45680d41097ee46550e36f7c1290754081becee8955529b0d197cf9d8efd"
 OBS_URL = "https://wethr.net/api/v2/observations.php"
 FORECASTS_URL = "https://wethr.net/api/v2/forecasts.php"
@@ -85,7 +85,6 @@ def fetch_model_forecasts(city):
     data = fetch_data(FORECASTS_URL, params)
     records = data.get("data", data) if isinstance(data, dict) else data
     model_highs = {m: None for m in TARGET_MODELS}
-    model_hourly = {m: [] for m in TARGET_MODELS}
     for rec in records:
         model = rec.get("model")
         if model not in TARGET_MODELS: continue
@@ -94,11 +93,9 @@ def fetch_model_forecasts(city):
         try:
             temp = float(temp_raw)
         except: continue
-        valid_time = rec.get("valid_time")
-        model_hourly[model].append((valid_time, temp))
         if model_highs[model] is None or temp > model_highs[model]:
             model_highs[model] = temp
-    return {m: v for m, v in model_highs.items() if v is not None}, model_hourly
+    return {m: v for m, v in model_highs.items() if v is not None}
 
 def fetch_nws_gridpoint(city):
     try:
@@ -121,7 +118,6 @@ def fetch_nws_gridpoint(city):
         st.warning(f"NWS gridpoint error: {e}")
         return None
 
-# ============= KALSHI FETCH (full version) =============
 def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, exact_grade):
     KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
     series_ticker_map = {
@@ -146,7 +142,6 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
 
         bin_dict = {}
         implied_high = None
-        max_yes = 0
         for m in markets:
             title = m.get("title", "").lower()
             match = re.search(r'(\d+)[ -]to[ -](\d+)', title) or re.search(r'(\d+)-(\d+)', title)
@@ -168,8 +163,7 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
                 old['ask'] = (old['ask'] + ask) / 2
             else:
                 bin_dict[bin_key] = {'yes_prob': yes_prob, 'bid': bid, 'ask': ask, 'volume': vol}
-            if yes_prob > max_yes:
-                max_yes = yes_prob
+            if yes_prob > (implied_high or 0):
                 implied_high = (low + high) / 2
         if not bin_dict:
             return "No parsable bins."
@@ -217,10 +211,10 @@ if st.button("Refresh Data Now"):
 if not selected_cities:
     st.warning("Select at least one city.")
 else:
-    data = []
+    summary_data = []
     for city_name in selected_cities:
         city = next(c for c in CITY_PRESETS if c.name == city_name)
-        with st.expander(f"📍 {city.name} - Summary", expanded=True):
+        with st.expander(f"📍 {city.name} - Detailed Report", expanded=False):
             obs = fetch_observed_high(city)
             nws = fetch_nws_high(city)
             model_highs, model_hourly = fetch_model_forecasts(city)
@@ -258,7 +252,7 @@ else:
 
             kalshi_snapshot = fetch_kalshi_market(city_name, blend, status, "TODO exact", "TODO safe", "TODO grade")
 
-            # Metrics row
+            # Summary metrics
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Blend", f"{blend:.1f}°F")
             col2.metric("Spread", f"{spread:.1f}°F")
@@ -273,8 +267,8 @@ else:
             else:
                 st.error("🔴 RED — noisy setup.")
 
-            # Extra notes - expandable
-            with st.expander("Extra Notes & Details"):
+            # Extra details in expander
+            with st.expander("Extra Details & Notes"):
                 st.markdown("**Model Highs**")
                 model_df = pd.DataFrame([
                     {"Model": m, "High": f"{model_highs.get(m, 'N/A'):.1f}°F" if model_highs.get(m) else "N/A"}
@@ -288,7 +282,6 @@ else:
                 st.markdown("**Bin Lean Guide**")
                 st.markdown("- Primary: LEAN YES")
                 st.markdown("- Secondary: SMALL YES / avoid NO")
-                # Add full guide loop if needed
 
                 st.markdown("**Exact & Safe**")
                 st.markdown(f"Exact: **{center}–{center+1}°F YES** (A/B grade)")
@@ -300,4 +293,35 @@ else:
                 st.markdown("**Full Kalshi Snapshot**")
                 st.markdown(kalshi_snapshot)
 
-    st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (refreshes on page load)")
+            # Collect for summary table
+            summary_data.append({
+                "City": city_name,
+                "Blend": f"{blend:.1f}°F",
+                "Spread": f"{spread:.1f}°F",
+                "Status": status,
+                "Band": f"{band[0]}–{band[1]}°F",
+                "Confidence": f"~{prob_in_band}%",
+                "Observed": f"{obs_high_f or 'N/A'}°F",
+                "Kalshi": kalshi_snapshot[:200] + "..." if kalshi_snapshot else "N/A"  # short for table
+            })
+
+    # Bottom summary box - all cities best to worst
+    if summary_data:
+        st.markdown("### All Cities Summary (Best → Worst)")
+        df = pd.DataFrame(summary_data)
+
+        def color_status(val):
+            if val == 'GREEN': return 'background-color: #90EE90'
+            elif val == 'YELLOW': return 'background-color: #FFFF99'
+            elif val == 'RED': return 'background-color: #FF9999'
+            return ''
+
+        styled_df = df.style.applymap(color_status, subset=['Status'])
+        # Sort: GREEN > YELLOW > RED, then by lowest spread
+        status_order = {'GREEN': 0, 'YELLOW': 1, 'RED': 2}
+        df['status_order'] = df['Status'].map(status_order)
+        df = df.sort_values(['status_order', 'Spread'], ascending=[True, True])
+        df = df.drop(columns=['status_order'])
+        st.dataframe(styled_df, use_container_width=True)
+
+st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (refreshes on page load)")
