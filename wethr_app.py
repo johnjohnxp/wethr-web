@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from statistics import stdev
 import requests
@@ -85,6 +86,7 @@ def fetch_model_forecasts(city):
     data = fetch_data(FORECASTS_URL, params)
     records = data.get("data", data) if isinstance(data, dict) else data
     model_highs = {m: None for m in TARGET_MODELS}
+    model_hourly = {m: [] for m in TARGET_MODELS}
     for rec in records:
         model = rec.get("model")
         if model not in TARGET_MODELS: continue
@@ -93,9 +95,12 @@ def fetch_model_forecasts(city):
         try:
             temp = float(temp_raw)
         except: continue
+        valid_time = rec.get("valid_time")
+        model_hourly[model].append((valid_time, temp))
         if model_highs[model] is None or temp > model_highs[model]:
             model_highs[model] = temp
-    return {m: v for m, v in model_highs.items() if v is not None}
+    highs = {m: v for m, v in model_highs.items() if v is not None}
+    return highs, model_hourly  # FIX: Return both to match unpack
 
 def fetch_nws_gridpoint(city):
     try:
@@ -118,6 +123,7 @@ def fetch_nws_gridpoint(city):
         st.warning(f"NWS gridpoint error: {e}")
         return None
 
+# KALSHI FETCH
 def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, exact_grade):
     KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
     series_ticker_map = {
@@ -203,6 +209,20 @@ st.set_page_config(page_title="Wethr Helper", layout="wide")
 st.title("Wethr Helper Dashboard")
 st.caption("Latest weather blends, NWS backup, and Kalshi markets. Refreshes on page load or button press.")
 
+# Sidebar auto-refresh
+st.sidebar.header("Auto-Refresh")
+refresh_interval = st.sidebar.selectbox(
+    "Refresh every",
+    options=["Off", "5 minutes", "10 minutes", "15 minutes", "30 minutes"],
+    index=3  # Default 15 min
+)
+
+if refresh_interval != "Off":
+    interval_map = {"5 minutes": 300, "10 minutes": 600, "15 minutes": 900, "30 minutes": 1800}
+    st.sidebar.info(f"Auto-refreshing every {refresh_interval}. Next in ~{interval_map[refresh_interval]//60} min.")
+    time.sleep(interval_map[refresh_interval])
+    st.rerun()
+
 selected_cities = st.multiselect("Select Cities", [c.name for c in CITY_PRESETS], default=["Miami", "Seattle"])
 
 if st.button("Refresh Data Now"):
@@ -214,7 +234,7 @@ else:
     summary_data = []
     for city_name in selected_cities:
         city = next(c for c in CITY_PRESETS if c.name == city_name)
-        with st.expander(f"📍 {city.name} - Detailed Report", expanded=False):
+        with st.expander(f"📍 {city.name} - Detailed Report", expanded=True):
             obs = fetch_observed_high(city)
             nws = fetch_nws_high(city)
             model_highs, model_hourly = fetch_model_forecasts(city)
@@ -252,7 +272,7 @@ else:
 
             kalshi_snapshot = fetch_kalshi_market(city_name, blend, status, "TODO exact", "TODO safe", "TODO grade")
 
-            # Summary metrics
+            # Metrics
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Blend", f"{blend:.1f}°F")
             col2.metric("Spread", f"{spread:.1f}°F")
@@ -267,7 +287,7 @@ else:
             else:
                 st.error("🔴 RED — noisy setup.")
 
-            # Extra details in expander
+            # Expander for extra notes
             with st.expander("Extra Details & Notes"):
                 st.markdown("**Model Highs**")
                 model_df = pd.DataFrame([
@@ -293,22 +313,25 @@ else:
                 st.markdown("**Full Kalshi Snapshot**")
                 st.markdown(kalshi_snapshot)
 
-            # Collect for summary table
+            # Collect for bottom summary
             summary_data.append({
                 "City": city_name,
-                "Blend": f"{blend:.1f}°F",
-                "Spread": f"{spread:.1f}°F",
+                "Blend": blend,
+                "Spread": spread,
                 "Status": status,
                 "Band": f"{band[0]}–{band[1]}°F",
-                "Confidence": f"~{prob_in_band}%",
-                "Observed": f"{obs_high_f or 'N/A'}°F",
-                "Kalshi": kalshi_snapshot[:200] + "..." if kalshi_snapshot else "N/A"  # short for table
+                "Confidence": prob_in_band,
+                "Observed": obs_high_f or "N/A",
+                "Kalshi": kalshi_snapshot[:200] + "..." if kalshi_snapshot else "N/A"
             })
 
-    # Bottom summary box - all cities best to worst
+    # Bottom summary box (best to worst)
     if summary_data:
         st.markdown("### All Cities Summary (Best → Worst)")
         df = pd.DataFrame(summary_data)
+        df['status_order'] = df['Status'].map({'GREEN': 0, 'YELLOW': 1, 'RED': 2})
+        df = df.sort_values(['status_order', 'Spread'])
+        df = df.drop(columns=['status_order'])
 
         def color_status(val):
             if val == 'GREEN': return 'background-color: #90EE90'
@@ -317,11 +340,6 @@ else:
             return ''
 
         styled_df = df.style.applymap(color_status, subset=['Status'])
-        # Sort: GREEN > YELLOW > RED, then by lowest spread
-        status_order = {'GREEN': 0, 'YELLOW': 1, 'RED': 2}
-        df['status_order'] = df['Status'].map(status_order)
-        df = df.sort_values(['status_order', 'Spread'], ascending=[True, True])
-        df = df.drop(columns=['status_order'])
         st.dataframe(styled_df, use_container_width=True)
 
 st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (refreshes on page load)")
