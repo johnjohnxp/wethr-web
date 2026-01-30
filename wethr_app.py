@@ -1,13 +1,24 @@
 import streamlit as st
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from statistics import stdev
 import requests
 import re
+import pandas as pd
 import warnings
 
 warnings.filterwarnings("ignore", category=Warning)
+
+# ZoneInfo fallback for compatibility
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    class ZoneInfo(str):
+        def __new__(cls, name):
+            return str.__new__(cls, name)
+
+from dataclasses import dataclass  # FIX: Missing import causing NameError
 
 # ============= CONFIG =============
 API_KEY = "570b45680d41097ee46550e36f7c1290754081becee8955529b0d197cf9d8efd"
@@ -35,11 +46,12 @@ CITY_PRESETS = [
     CityConfig("Miami", "KMIA", "KMIA", "America/New_York", "MFL/64,31", "25.7617,-80.1918"),
 ]
 
+# ============= HELPERS =============
 def auth_headers():
     return {"X-API-Key": API_KEY}
 
 def todays_local_day_range_utc(tz_name):
-    tz = timezone(tz_name) if isinstance(tz_name, str) else tz_name
+    tz = ZoneInfo(tz_name)
     now_local = datetime.now(tz)
     start_local = datetime(now_local.year, now_local.month, now_local.day, 0, 0, 0, tzinfo=tz)
     end_local = start_local + timedelta(days=1)
