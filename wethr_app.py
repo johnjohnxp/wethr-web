@@ -25,8 +25,8 @@ from dataclasses import dataclass
 
 # ==================== LOGIN (PERSISTENT ACROSS REFRESHES) ====================
 # Change these to your own credentials!
-CORRECT_USERNAME = "admin"               # ← Your username
-CORRECT_PASSWORD = "snc2006"   # ← Your strong password
+CORRECT_USERNAME = "john"               # ← Your username
+CORRECT_PASSWORD = "kalshi2026secure"   # ← Your strong password
 
 # Generate a short token (hash of username + password)
 LOGIN_TOKEN = sha256((CORRECT_USERNAME + CORRECT_PASSWORD).encode()).hexdigest()[:16]
@@ -58,7 +58,7 @@ if not st.session_state.logged_in:
                 st.error("Incorrect username or password. Try again.")
     st.stop()  # Stop script until logged in
 
-# ==================== DASHBOARD (only shown after login) ====================
+# ==================== DASHBOARD ====================
 st.set_page_config(page_title="Wethr Helper", layout="wide")
 st.title("Wethr Helper Dashboard")
 st.caption("Latest weather blends, NWS backup, and Kalshi markets. All cities shown automatically. GREEN expand on load. Refreshes on page load or button press.")
@@ -349,9 +349,6 @@ def make_time_note(city: CityConfig, obs, band):
         return "Late in the day and obs are inside the suggested band; high is likely close to final."
 
 # ============= STREAMLIT APP =============
-# (rest of your app code goes here — cities loop, expanders, summary, logging, etc.)
-# ... paste your existing dashboard code below ...
-
 # Top auto-refresh selector (small & sleek)
 col_refresh1, col_refresh2 = st.columns([3, 1])
 with col_refresh1:
@@ -394,6 +391,7 @@ if st.button("Refresh Data Now"):
     st.rerun()
 
 summary_data = []
+gefs_summary = []  # For consolidated GEFS table
 log_rows = []  # For CSV logging
 for city_name in selected_cities:
     city = next(c for c in CITY_PRESETS if c.name == city_name)
@@ -409,6 +407,7 @@ for city_name in selected_cities:
 
     if len(model_highs) < 3:
         summary_data.append({"City": city_name, "Blend": "N/A", "Spread": "N/A", "Status": "ERROR", "Band": "N/A", "Confidence": "N/A", "Observed": "N/A", "Kalshi": "N/A"})
+        gefs_summary.append({"City": city_name, "GEFS Top Probs": "N/A", "Members": 0})
         continue
 
     vals = list(model_highs.values())
@@ -460,11 +459,13 @@ for city_name in selected_cities:
     # NOAA GEFS ensembles for bin probs
     lat, lon = city.lat_lon.split(',')
     gefs_probs, num_members = fetch_gefs_probs(lat, lon)
+    gefs_text = "N/A"
     if gefs_probs:
-        st.markdown("**GEFS Ensemble Probs**")
-        for bin_range, prob in gefs_probs.items():
-            st.markdown(f"{bin_range}°F: {prob:.0f}%")
+        # Sort by probability descending, show top 5
+        sorted_probs = sorted(gefs_probs.items(), key=lambda x: x[1], reverse=True)[:5]
+        gefs_text = "<br>".join([f"{bin_range}°F: {prob:.0f}%" for bin_range, prob in sorted_probs])
         st.info(f"GEFS ensemble ({num_members} members) added for prob % per bin")
+    gefs_summary.append({"City": city_name, "GEFS Top Probs": gefs_text, "Members": num_members})
 
     diff_nws = abs(blend - nws_high) if nws_high else None
     status = "GREEN" if spread <= 3.0 and (diff_nws or 999) <= 1.5 else \
@@ -566,6 +567,12 @@ if summary_data:
 
     styled_df = df.style.applymap(color_status, subset=['Status'])
     st.dataframe(styled_df, width='stretch')  # Fixed deprecation
+
+# Consolidated GEFS summary table at the bottom (all cities together)
+if gefs_summary:
+    st.markdown("### GEFS Ensemble Probabilities – All Cities")
+    gefs_df = pd.DataFrame(gefs_summary)
+    st.dataframe(gefs_df, width='stretch')
 
 # Auto-log predictions to CSV (appends new rows each run)
 if log_rows:
