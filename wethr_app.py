@@ -238,15 +238,21 @@ def fetch_gefs_probs(lat, lon):
         r = requests.get(url, timeout=15)
         r.raise_for_status()
         data = r.json()
-        hourly_temps = data["hourly"]["temperature_2m"]
+        hourly_temps = data.get("hourly", {}).get("temperature_2m", [])
+        if not hourly_temps or len(hourly_temps) < 10:
+            st.warning("GEFS returned empty or incomplete data")
+            return {}, 0
+
         daily_maxes = []
-        step = len(hourly_temps) // 30  # Approx 30 members
+        step = max(1, len(hourly_temps) // 30)  # Prevent zero step
         for i in range(0, len(hourly_temps), step):
             member_temps = hourly_temps[i:i+48]  # Approx 48 hours
             if member_temps:
                 daily_maxes.append(max(member_temps))
+
         if not daily_maxes:
             return {}, 0
+
         bin_counts = Counter(round(max_temp) for max_temp in daily_maxes)
         total = len(daily_maxes)
         probs = {f"{k}-{k+1}": (count / total * 100) for k, count in sorted(bin_counts.items())}
@@ -411,7 +417,7 @@ for city_name in selected_cities:
     if dew_bias or wind_bias or cloud_bias:
         st.info(f"Biases applied: Dew {dew_bias:.1f}°F, Wind {wind_bias:.1f}°F, Cloud {cloud_bias:.1f}°F")
 
-    # NOAA GEFS ensembles for bin probs (fixed URL)
+    # NOAA GEFS ensembles for bin probs
     lat, lon = city.lat_lon.split(',')
     gefs_probs, num_members = fetch_gefs_probs(lat, lon)
     if gefs_probs:
