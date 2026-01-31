@@ -282,7 +282,7 @@ def fetch_gefs_probs(lat, lon):
         hourly_temps = data.get("hourly", {}).get("temperature_2m", [])
         if not hourly_temps or len(hourly_temps) < 10:
             st.warning("GEFS returned empty or incomplete data")
-            return {}, 0
+            return {}, 0, None
 
         daily_maxes = []
         step = max(1, len(hourly_temps) // 30)  # Prevent zero step
@@ -292,15 +292,16 @@ def fetch_gefs_probs(lat, lon):
                 daily_maxes.append(max(member_temps))
 
         if not daily_maxes:
-            return {}, 0
+            return {}, 0, None
 
         bin_counts = Counter(round(max_temp) for max_temp in daily_maxes)
         total = len(daily_maxes)
         probs = {f"{k}-{k+1}": (count / total * 100) for k, count in sorted(bin_counts.items())}
-        return probs, total
+        gefs_mean = sum(daily_maxes) / total  # GEFS average high
+        return probs, total, gefs_mean
     except Exception as e:
         st.warning(f"GFS ensemble error: {e}")
-        return {}, 0
+        return {}, 0, None
 
 def make_time_note(city: CityConfig, obs, band):
     tz = ZoneInfo(city.timezone)
@@ -406,7 +407,7 @@ for city_name in selected_cities:
     obs_high_f = float(obs_high) if obs_high else None
 
     if len(model_highs) < 3:
-        summary_data.append({"City": city_name, "Blend": "N/A", "Spread": "N/A", "Status": "ERROR", "Band": "N/A", "Confidence": "N/A", "Observed": "N/A", "Kalshi": "N/A"})
+        summary_data.append({"City": city_name, "Blend": "N/A", "Spread": "N/A", "Status": "ERROR", "Band": "N/A", "Confidence": "N/A", "Observed": "N/A", "Kalshi": "N/A", "Blended Model": "N/A"})
         gefs_summary.append({"City": city_name, "GEFS Top Probs": "N/A", "Members": 0})
         continue
 
@@ -456,36 +457,38 @@ for city_name in selected_cities:
     if dew_bias or wind_bias or cloud_bias:
         st.info(f"Biases applied: Dew {dew_bias:.1f}°F, Wind {wind_bias:.1f}°F, Cloud {cloud_bias:.1f}°F")
 
-    # NOAA GEFS ensembles for bin probs
+    # NOAA GEFS ensembles for bin probs + mean
     lat, lon = city.lat_lon.split(',')
-    gefs_probs, num_members = fetch_gefs_probs(lat, lon)
+    gefs_probs, num_members, gefs_mean = fetch_gefs_probs(lat, lon)
+    blended_mean = blend
+    if gefs_mean is not None:
+        blended_mean = 0.7 * blend + 0.3 * gefs_mean  # 70% your model, 30% GEFS
+        st.info(f"Blended mean: {blended_mean:.1f}°F (70% your model + 30% GEFS)")
     gefs_text = "N/A"
     if gefs_probs:
-        # Sort by probability descending, show top 5
         sorted_probs = sorted(gefs_probs.items(), key=lambda x: x[1], reverse=True)[:5]
         gefs_text = "<br>".join([f"{bin_range}°F: {prob:.0f}%" for bin_range, prob in sorted_probs])
-        st.info(f"GEFS ensemble ({num_members} members) added for prob % per bin")
     gefs_summary.append({"City": city_name, "GEFS Top Probs": gefs_text, "Members": num_members})
 
     diff_nws = abs(blend - nws_high) if nws_high else None
     status = "GREEN" if spread <= 3.0 and (diff_nws or 999) <= 1.5 else \
              "YELLOW" if spread <= 4.0 and (diff_nws or 999) <= 2.0 else "RED"
 
-    center = round(blend)
+    center = round(blended_mean)  # Use blended mean for center/band
     band = (center - 1, center + 1)
     prob_in_band = 68 if std < 1.5 else 50 if std < 2.5 else 30
 
-    kalshi_snapshot = fetch_kalshi_market(city_name, blend, status, "TODO exact", "TODO safe", "TODO grade")
+    kalshi_snapshot = fetch_kalshi_market(city_name, blended_mean, status, "TODO exact", "TODO safe", "TODO grade")
 
     # Log this prediction for accuracy tracking
     actual_high = obs_high_f if obs_high_f else "Unknown"
-    error = blend - float(actual_high) if actual_high != "Unknown" else "N/A"
+    error = blended_mean - float(actual_high) if actual_high != "Unknown" else "N/A"
     bin_hit = "Yes" if band[0] <= float(actual_high) <= band[1] else "No" if actual_high != "Unknown" else "N/A"
     log_row = {
         "Date": datetime.now().strftime("%Y-%m-%d"),
         "Time": datetime.now().strftime("%H:%M:%S"),
         "City": city_name,
-        "Predicted Blend": round(blend, 1),
+        "Predicted Blend": round(blended_mean, 1),
         "Actual High": actual_high,
         "Error (°F)": round(error, 1) if isinstance(error, (int, float)) else error,
         "Status": status,
@@ -496,10 +499,11 @@ for city_name in selected_cities:
     }
     log_rows.append(log_row)
 
-    # Collect for summary table
+    # Collect for summary table (now with Blended Model column)
     summary_data.append({
         "City": city_name,
-        "Blend": f"{blend:.1f}°F",
+        "Original Blend": f"{blend:.1f}°F",
+        "Blended Model": f"{blended_mean:.1f}°F",
         "Spread": f"{spread:.1f}°F",
         "Status": status,
         "Band": f"{band[0]}–{band[1]}°F",
@@ -512,9 +516,9 @@ for city_name in selected_cities:
     with st.expander(f"📍 {city.name} - Detailed Report", expanded=(status == "GREEN")):
         # Metrics row
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Blend", f"{blend:.1f}°F")
-        col2.metric("Spread", f"{spread:.1f}°F")
-        col3.metric("Confidence", f"~{prob_in_band}%")
+        col1.metric("Original Blend", f"{blend:.1f}°F")
+        col2.metric("Blended Model", f"{blended_mean:.1f}°F")
+        col3.metric("Spread", f"{spread:.1f}°F")
         col4.metric("Observed", f"{obs_high_f or 'N/A'}°F")
 
         st.markdown(f"**Status:** {status}")
@@ -551,7 +555,7 @@ for city_name in selected_cities:
         st.markdown("**Full Kalshi Snapshot**")
         st.markdown(kalshi_snapshot)
 
-# Bottom summary box (best to worst)
+# Bottom summary box (best to worst) — now with Blended Model column
 if summary_data:
     st.markdown("### All Cities Summary (Best → Worst)")
     df = pd.DataFrame(summary_data)
