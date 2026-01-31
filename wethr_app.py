@@ -128,9 +128,9 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
     series_ticker_map = {
         "Seattle": "KXHIGHTSEA",
         "San Francisco": "KXHIGHTSFO",
-        "Washington DC": "KXHIGHTDCA",
-        "New Orleans": "KXHIGHTMSY",
-        "Las Vegas": "KXHIGHTLAS",
+        "Washington DC": "KXHIGHTDC",
+        "New Orleans": "KXHIGHTNOLA",
+        "Las Vegas": "KXHIGHTLV",
         "Miami": "KXHIGHMIA",
     }
     series_ticker = series_ticker_map.get(city_name)
