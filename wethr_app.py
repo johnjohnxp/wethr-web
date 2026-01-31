@@ -25,15 +25,14 @@ from dataclasses import dataclass
 
 # ==================== LOGIN (PERSISTENT ACROSS REFRESHES) ====================
 # Change these to your own credentials!
-CORRECT_USERNAME = "admin"               # ← Your username
-CORRECT_PASSWORD = "snc2006"   # ← Your strong password
+CORRECT_USERNAME = "john"               # ← Your username
+CORRECT_PASSWORD = "kalshi2026secure"   # ← Your strong password
 
 # Generate a short token (hash of username + password)
 LOGIN_TOKEN = sha256((CORRECT_USERNAME + CORRECT_PASSWORD).encode()).hexdigest()[:16]
 
-# Check if already logged in via token in URL
-query_params = st.experimental_get_query_params()
-if 'token' in query_params and query_params['token'][0] == LOGIN_TOKEN:
+# Check if already logged in via token in query params
+if 'token' in st.query_params and st.query_params['token'][0] == LOGIN_TOKEN:
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = True
 else:
@@ -50,8 +49,8 @@ if not st.session_state.logged_in:
         if submit:
             if username == CORRECT_USERNAME and password == CORRECT_PASSWORD:
                 st.session_state.logged_in = True
-                # Add token to URL so refresh keeps you logged in
-                st.experimental_set_query_params(token=LOGIN_TOKEN)
+                # Add token to query params so refresh keeps you logged in
+                st.query_params["token"] = LOGIN_TOKEN
                 st.success("Logged in successfully! Refreshing...")
                 st.rerun()
             else:
@@ -171,7 +170,7 @@ def fetch_model_forecasts(city):
 def fetch_nws_gridpoint(city):
     try:
         point_url = f"https://api.weather.gov/points/{city.lat_lon}"
-        headers = {"User-Agent": "WethrHelper"}
+        headers = {"User-Agent": "WethrHelper (johnsweather.streamlit.app)"}
         r = requests.get(point_url, headers=headers, timeout=10)
         r.raise_for_status()
         point_data = r.json()["properties"]
@@ -391,7 +390,7 @@ if refresh_interval != "Off":
     """
     countdown_placeholder.markdown(countdown_js, unsafe_allow_html=True)
 
-# Show ALL cities automatically (now 9)
+# Show ALL cities automatically
 selected_cities = [c.name for c in CITY_PRESETS]
 
 if st.button("Refresh Data Now"):
