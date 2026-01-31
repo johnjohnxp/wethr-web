@@ -97,7 +97,7 @@ def fetch_model_forecasts(city):
         except: continue
         valid_time = rec.get("valid_time")
         if valid_time is None: continue
-        # Parse valid_time to datetime (FIX: TypeError)
+        # Parse valid_time to datetime
         try:
             valid_time = datetime.fromisoformat(valid_time.replace("Z", "+00:00"))
         except:
@@ -209,6 +209,52 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
     except Exception as e:
         return f"Kalshi error: {str(e)}"
 
+def make_time_note(city: CityConfig, obs, band):
+    tz = ZoneInfo(city.timezone)
+    now_local = datetime.now(tz)
+    obs_high = obs.get("wethr_high")
+    time_high_utc = obs.get("time_of_high_utc")
+    dt_high_utc = None
+    if time_high_utc:
+        try:
+            if time_high_utc.endswith("Z"):
+                time_high_utc = time_high_utc.replace("Z", "+00:00")
+            dt_high_utc = datetime.fromisoformat(time_high_utc)
+        except:
+            pass
+    if obs_high is None:
+        return "Observed high missing."
+    try:
+        obs_high_f = float(obs_high)
+    except:
+        return "Observed high not numeric."
+    if band is None:
+        return "Local time is late afternoon or later; today's high may already be set." if now_local.hour >= 16 else "Plenty of time left in the day for temps to move."
+    low_band, high_band = band
+    if dt_high_utc is not None:
+        dt_high_local = dt_high_utc.astimezone(tz)
+        hours_since_high = (now_local - dt_high_local).total_seconds() / 3600.0
+        if hours_since_high >= 3:
+            return "Observed high occurred several hours ago; today's high is likely already set."
+    if now_local.hour <= 11:
+        if obs_high_f < low_band - 3:
+            return "Early in the day and obs are still well below the suggested band; plenty of runway left."
+        else:
+            return "Early in the day; temps are already approaching the suggested band."
+    if 11 < now_local.hour < 16:
+        if obs_high_f < low_band:
+            return "Midday and obs are still below the suggested band; upside potential remains."
+        elif low_band <= obs_high_f <= high_band:
+            return "Midday and obs sit inside the suggested band; careful sizing / management warranted."
+        else:
+            return "Midday and obs have already exceeded the suggested band; watch for overachievement risk."
+    if obs_high_f >= high_band:
+        return "Late in the day and obs are at/above the suggested band; high is likely already in."
+    elif obs_high_f < low_band:
+        return "Late in the day and obs never reached the suggested band; underperformance vs guidance."
+    else:
+        return "Late in the day and obs are inside the suggested band; high is likely close to final."
+
 # ============= STREAMLIT APP =============
 st.set_page_config(page_title="Wethr Helper", layout="wide")
 st.title("Wethr Helper Dashboard")
@@ -235,7 +281,7 @@ if refresh_interval != "Off":
     countdown_js = f"""
     <script>
     const seconds = {interval_seconds};
-    let remaining = seconds
+    let remaining = seconds;
     const timer = setInterval(() => {{
         remaining--;
         document.getElementById("countdown").innerText = Math.floor(remaining / 60) + " min " + (remaining % 60) + " sec";
