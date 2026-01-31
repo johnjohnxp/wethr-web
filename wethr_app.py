@@ -4,10 +4,12 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from statistics import stdev
+from collections import Counter
 import requests
 import re
 import pandas as pd
 import warnings
+import csv
 
 warnings.filterwarnings("ignore", category=Warning)
 
@@ -27,6 +29,7 @@ FORECASTS_URL = "https://wethr.net/api/v2/forecasts.php"
 NWS_URL = "https://wethr.net/api/v2/nws_forecasts.php"
 TARGET_MODELS = ["HRRR", "NAM", "NBM", "ECMWF-IFS"]
 MODEL_WEIGHTS_BASE = {'HRRR': 0.35, 'NAM': 0.25, 'NBM': 0.25, 'ECMWF-IFS': 0.15}
+LOG_FILE = "prediction_log.csv"  # Will be saved in repo
 
 @dataclass
 class CityConfig:
@@ -87,14 +90,24 @@ def fetch_model_forecasts(city):
     records = data.get("data", data) if isinstance(data, dict) else data
     model_highs = {m: None for m in TARGET_MODELS}
     model_hourly = {m: [] for m in TARGET_MODELS}
+    model_dew = {m: [] for m in TARGET_MODELS}
+    model_wind = {m: [] for m in TARGET_MODELS}
+    model_cloud = {m: [] for m in TARGET_MODELS}
     for rec in records:
         model = rec.get("model")
         if model not in TARGET_MODELS: continue
         temp_raw = rec.get("temperature_f")
+        dew_raw = rec.get("dew_point_f")
+        wind_raw = rec.get("wind_speed_kt")
+        cloud_raw = rec.get("cloud_cover")
         if temp_raw is None: continue
         try:
             temp = float(temp_raw)
-        except: continue
+            dew = float(dew_raw) if dew_raw is not None else None
+            wind = float(wind_raw) if wind_raw is not None else None
+            cloud = float(cloud_raw) if cloud_raw is not None else None
+        except:
+            continue
         valid_time = rec.get("valid_time")
         if valid_time is None: continue
         try:
@@ -102,10 +115,13 @@ def fetch_model_forecasts(city):
         except:
             continue
         model_hourly[model].append((valid_time, temp))
+        if dew is not None: model_dew[model].append((valid_time, dew))
+        if wind is not None: model_wind[model].append((valid_time, wind))
+        if cloud is not None: model_cloud[model].append((valid_time, cloud))
         if model_highs[model] is None or temp > model_highs[model]:
             model_highs[model] = temp
     highs = {m: v for m, v in model_highs.items() if v is not None}
-    return highs, model_hourly
+    return highs, model_hourly, model_dew, model_wind, model_cloud
 
 def fetch_nws_gridpoint(city):
     try:
@@ -208,6 +224,22 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
     except Exception as e:
         return f"Kalshi error: {str(e)}"
 
+def fetch_gefs_probs(lat, lon):
+    try:
+        url = f"https://ensemble-api.open-meteo.com/v1/ensemble?latitude={lat}&longitude={lon}&hourly=temperature_2m&models=gefs"
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        hourly_temps = data["hourly"]["temperature_2m"]
+        daily_maxes = [max(member[:48]) for member in zip(*hourly_temps)]  # First 48 hours
+        bin_counts = Counter(round(max_temp) for max_temp in daily_maxes)
+        total = len(daily_maxes)
+        probs = {f"{k}-{k+1}": (count / total * 100) for k, count in sorted(bin_counts.items())}
+        return probs, total
+    except Exception as e:
+        st.warning(f"GEFS ensemble error: {e}")
+        return {}, 0
+
 def make_time_note(city: CityConfig, obs, band):
     tz = ZoneInfo(city.timezone)
     now_local = datetime.now(tz)
@@ -301,13 +333,14 @@ if st.button("Refresh Data Now"):
     st.rerun()
 
 summary_data = []
+log_rows = []  # For CSV logging
 for city_name in selected_cities:
     city = next(c for c in CITY_PRESETS if c.name == city_name)
 
     # Fetch data
     obs = fetch_observed_high(city)
     nws = fetch_nws_high(city)
-    model_highs, model_hourly = fetch_model_forecasts(city)
+    model_highs, model_hourly, model_dew, model_wind, model_cloud = fetch_model_forecasts(city)
     nws_high = float(nws.get("high")) if nws and nws.get("high") else None
     nws_grid = fetch_nws_gridpoint(city)
     obs_high = obs.get("wethr_high") if obs else None
@@ -332,6 +365,46 @@ for city_name in selected_cities:
     if nws_grid:
         blend = 0.7 * blend + 0.3 * nws_grid
 
+    # Rise-rate adjustment (from HRRR hourly)
+    rise_rate = 0
+    if 'HRRR' in model_hourly and len(model_hourly['HRRR']) >= 3:
+        recent = sorted(model_hourly['HRRR'][-3:], key=lambda x: x[0])
+        time_diff = (recent[-1][0] - recent[0][0]).total_seconds() / 3600
+        if time_diff > 0:
+            rise_rate = (recent[-1][1] - recent[0][1]) / time_diff
+    if rise_rate > 1.5:
+        adjustment = min(1.0, rise_rate * 0.3)  # Cap at +1°F
+        blend += adjustment
+        st.info(f"Rise rate {rise_rate:.1f}°F/hr — blend adjusted +{adjustment:.1f}°F")
+
+    # Dew point / wind / cloud bias
+    dew_bias = 0
+    wind_bias = 0
+    cloud_bias = 0
+    for m in TARGET_MODELS:
+        if model_dew.get(m) and len(model_dew[m]) > 0:
+            avg_dew = sum(d[1] for d in model_dew[m]) / len(model_dew[m])
+            if avg_dew > 65: dew_bias -= 0.5
+            elif avg_dew < 50: dew_bias += 0.3
+        if model_wind.get(m) and len(model_wind[m]) > 0:
+            avg_wind = sum(w[1] for w in model_wind[m]) / len(model_wind[m])
+            if avg_wind > 15: wind_bias -= 0.5
+        if model_cloud.get(m) and len(model_cloud[m]) > 0:
+            avg_cloud = sum(c[1] for c in model_cloud[m]) / len(model_cloud[m])
+            if avg_cloud > 70: cloud_bias -= 0.5
+    blend += dew_bias + wind_bias + cloud_bias
+    if dew_bias or wind_bias or cloud_bias:
+        st.info(f"Biases applied: Dew {dew_bias:.1f}°F, Wind {wind_bias:.1f}°F, Cloud {cloud_bias:.1f}°F")
+
+    # NOAA GEFS ensembles for bin probs
+    lat, lon = city.lat_lon.split(',')
+    gefs_probs, num_members = fetch_gefs_probs(lat, lon)
+    if gefs_probs:
+        st.markdown("**GEFS Ensemble Probs**")
+        for bin_range, prob in gefs_probs.items():
+            st.markdown(f"{bin_range}°F: {prob:.0f}%")
+        st.info(f"GEFS ensemble ({num_members} members) added for prob % per bin")
+
     diff_nws = abs(blend - nws_high) if nws_high else None
     status = "GREEN" if spread <= 3.0 and (diff_nws or 999) <= 1.5 else \
              "YELLOW" if spread <= 4.0 and (diff_nws or 999) <= 2.0 else "RED"
@@ -341,6 +414,25 @@ for city_name in selected_cities:
     prob_in_band = 68 if std < 1.5 else 50 if std < 2.5 else 30
 
     kalshi_snapshot = fetch_kalshi_market(city_name, blend, status, "TODO exact", "TODO safe", "TODO grade")
+
+    # Log this prediction for accuracy tracking
+    actual_high = obs_high_f if obs_high_f else "Unknown"
+    error = blend - float(actual_high) if actual_high != "Unknown" else "N/A"
+    bin_hit = "Yes" if band[0] <= float(actual_high) <= band[1] else "No" if actual_high != "Unknown" else "N/A"
+    log_row = {
+        "Date": datetime.now().strftime("%Y-%m-%d"),
+        "Time": datetime.now().strftime("%H:%M:%S"),
+        "City": city_name,
+        "Predicted Blend": round(blend, 1),
+        "Actual High": actual_high,
+        "Error (°F)": round(error, 1) if isinstance(error, (int, float)) else error,
+        "Status": status,
+        "Confidence": prob_in_band,
+        "Bin Hit": bin_hit,
+        "Spread": round(spread, 1),
+        "NWS Diff": round(diff_nws, 1) if diff_nws is not None else "N/A"
+    }
+    log_rows.append(log_row)
 
     # Collect for summary table
     summary_data.append({
@@ -413,5 +505,24 @@ if summary_data:
 
     styled_df = df.style.applymap(color_status, subset=['Status'])
     st.dataframe(styled_df, width='stretch')  # Fixed deprecation
+
+# Auto-log predictions to CSV (appends new rows each run)
+if log_rows:
+    # Header if file doesn't exist
+    file_exists = os.path.exists(LOG_FILE)
+    with open(LOG_FILE, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=log_rows[0].keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerows(log_rows)
+
+    # Show download button for log file
+    with open(LOG_FILE, 'rb') as f:
+        st.download_button(
+            label="Download Prediction Log (CSV)",
+            data=f,
+            file_name="prediction_log.csv",
+            mime="text/csv"
+        )
 
 st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (refreshes on page load)")
