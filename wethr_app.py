@@ -4,6 +4,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from statistics import stdev
+from collections import Counter
 import requests
 import re
 import pandas as pd
@@ -87,26 +88,38 @@ def fetch_model_forecasts(city):
     records = data.get("data", data) if isinstance(data, dict) else data
     model_highs = {m: None for m in TARGET_MODELS}
     model_hourly = {m: [] for m in TARGET_MODELS}
+    model_dew = {m: [] for m in TARGET_MODELS}
+    model_wind = {m: [] for m in TARGET_MODELS}
+    model_cloud = {m: [] for m in TARGET_MODELS}
     for rec in records:
         model = rec.get("model")
         if model not in TARGET_MODELS: continue
         temp_raw = rec.get("temperature_f")
+        dew_raw = rec.get("dew_point_f")
+        wind_raw = rec.get("wind_speed_kt")
+        cloud_raw = rec.get("cloud_cover")
         if temp_raw is None: continue
         try:
             temp = float(temp_raw)
-        except: continue
+            dew = float(dew_raw) if dew_raw is not None else None
+            wind = float(wind_raw) if wind_raw is not None else None
+            cloud = float(cloud_raw) if cloud_raw is not None else None
+        except:
+            continue
         valid_time = rec.get("valid_time")
         if valid_time is None: continue
-        # Parse valid_time to datetime
         try:
             valid_time = datetime.fromisoformat(valid_time.replace("Z", "+00:00"))
         except:
             continue
         model_hourly[model].append((valid_time, temp))
+        if dew is not None: model_dew[model].append((valid_time, dew))
+        if wind is not None: model_wind[model].append((valid_time, wind))
+        if cloud is not None: model_cloud[model].append((valid_time, cloud))
         if model_highs[model] is None or temp > model_highs[model]:
             model_highs[model] = temp
     highs = {m: v for m, v in model_highs.items() if v is not None}
-    return highs, model_hourly
+    return highs, model_hourly, model_dew, model_wind, model_cloud
 
 def fetch_nws_gridpoint(city):
     try:
@@ -209,51 +222,21 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
     except Exception as e:
         return f"Kalshi error: {str(e)}"
 
-def make_time_note(city: CityConfig, obs, band):
-    tz = ZoneInfo(city.timezone)
-    now_local = datetime.now(tz)
-    obs_high = obs.get("wethr_high")
-    time_high_utc = obs.get("time_of_high_utc")
-    dt_high_utc = None
-    if time_high_utc:
-        try:
-            if time_high_utc.endswith("Z"):
-                time_high_utc = time_high_utc.replace("Z", "+00:00")
-            dt_high_utc = datetime.fromisoformat(time_high_utc)
-        except:
-            pass
-    if obs_high is None:
-        return "Observed high missing."
+def fetch_gefs_probs(lat, lon):
     try:
-        obs_high_f = float(obs_high)
-    except:
-        return "Observed high not numeric."
-    if band is None:
-        return "Local time is late afternoon or later; today's high may already be set." if now_local.hour >= 16 else "Plenty of time left in the day for temps to move."
-    low_band, high_band = band
-    if dt_high_utc is not None:
-        dt_high_local = dt_high_utc.astimezone(tz)
-        hours_since_high = (now_local - dt_high_local).total_seconds() / 3600.0
-        if hours_since_high >= 3:
-            return "Observed high occurred several hours ago; today's high is likely already set."
-    if now_local.hour <= 11:
-        if obs_high_f < low_band - 3:
-            return "Early in the day and obs are still well below the suggested band; plenty of runway left."
-        else:
-            return "Early in the day; temps are already approaching the suggested band."
-    if 11 < now_local.hour < 16:
-        if obs_high_f < low_band:
-            return "Midday and obs are still below the suggested band; upside potential remains."
-        elif low_band <= obs_high_f <= high_band:
-            return "Midday and obs sit inside the suggested band; careful sizing / management warranted."
-        else:
-            return "Midday and obs have already exceeded the suggested band; watch for overachievement risk."
-    if obs_high_f >= high_band:
-        return "Late in the day and obs are at/above the suggested band; high is likely already in."
-    elif obs_high_f < low_band:
-        return "Late in the day and obs never reached the suggested band; underperformance vs guidance."
-    else:
-        return "Late in the day and obs are inside the suggested band; high is likely close to final."
+        url = f"https://ensemble-api.open-meteo.com/v1/ensemble?latitude={lat}&longitude={lon}&hourly=temperature_2m&models=gefs"
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        hourly_temps = data["hourly"]["temperature_2m"]
+        daily_maxes = [max(member[:48]) for member in zip(*hourly_temps)]  # First 48 hours
+        bin_counts = Counter(round(max_temp) for max_temp in daily_maxes)
+        total = len(daily_maxes)
+        probs = {f"{k}-{k+1}": (count / total * 100) for k, count in sorted(bin_counts.items())}
+        return probs, total
+    except Exception as e:
+        st.warning(f"GEFS ensemble error: {e}")
+        return {}, 0
 
 # ============= STREAMLIT APP =============
 st.set_page_config(page_title="Wethr Helper", layout="wide")
@@ -308,7 +291,7 @@ for city_name in selected_cities:
     # Fetch data
     obs = fetch_observed_high(city)
     nws = fetch_nws_high(city)
-    model_highs, model_hourly = fetch_model_forecasts(city)
+    model_highs, model_hourly, model_dew, model_wind, model_cloud = fetch_model_forecasts(city)
     nws_high = float(nws.get("high")) if nws and nws.get("high") else None
     nws_grid = fetch_nws_gridpoint(city)
     obs_high = obs.get("wethr_high") if obs else None
@@ -332,6 +315,46 @@ for city_name in selected_cities:
 
     if nws_grid:
         blend = 0.7 * blend + 0.3 * nws_grid
+
+    # Rise-rate adjustment (from HRRR hourly)
+    rise_rate = 0
+    if 'HRRR' in model_hourly and len(model_hourly['HRRR']) >= 3:
+        recent = sorted(model_hourly['HRRR'][-3:], key=lambda x: x[0])
+        time_diff = (recent[-1][0] - recent[0][0]).total_seconds() / 3600
+        if time_diff > 0:
+            rise_rate = (recent[-1][1] - recent[0][1]) / time_diff
+    if rise_rate > 1.5:
+        adjustment = min(1.0, rise_rate * 0.3)  # Cap at +1°F
+        blend += adjustment
+        st.info(f"Rise rate {rise_rate:.1f}°F/hr — blend adjusted +{adjustment:.1f}°F")
+
+    # Dew point / wind / cloud bias
+    dew_bias = 0
+    wind_bias = 0
+    cloud_bias = 0
+    for m in TARGET_MODELS:
+        if model_dew.get(m) and len(model_dew[m]) > 0:
+            avg_dew = sum(d[1] for d in model_dew[m]) / len(model_dew[m])
+            if avg_dew > 65: dew_bias -= 0.5
+            elif avg_dew < 50: dew_bias += 0.3
+        if model_wind.get(m) and len(model_wind[m]) > 0:
+            avg_wind = sum(w[1] for w in model_wind[m]) / len(model_wind[m])
+            if avg_wind > 15: wind_bias -= 0.5
+        if model_cloud.get(m) and len(model_cloud[m]) > 0:
+            avg_cloud = sum(c[1] for c in model_cloud[m]) / len(model_cloud[m])
+            if avg_cloud > 70: cloud_bias -= 0.5
+    blend += dew_bias + wind_bias + cloud_bias
+    if dew_bias or wind_bias or cloud_bias:
+        st.info(f"Biases applied: Dew {dew_bias:.1f}°F, Wind {wind_bias:.1f}°F, Cloud {cloud_bias:.1f}°F")
+
+    # NOAA GEFS ensembles for bin probs
+    lat, lon = city.lat_lon.split(',')
+    gefs_probs, num_members = fetch_gefs_probs(lat, lon)
+    if gefs_probs:
+        st.markdown("**GEFS Ensemble Probs**")
+        for bin_range, prob in gefs_probs.items():
+            st.markdown(f"{bin_range}°F: {prob:.0f}%")
+        st.info(f"GEFS ensemble ({num_members} members) added for prob % per bin")
 
     diff_nws = abs(blend - nws_high) if nws_high else None
     status = "GREEN" if spread <= 3.0 and (diff_nws or 999) <= 1.5 else \
