@@ -128,9 +128,9 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
     series_ticker_map = {
         "Seattle": "KXHIGHTSEA",
         "San Francisco": "KXHIGHTSFO",
-        "Washington DC": "KXHIGHTDC",     # Updated
-        "New Orleans": "KXHIGHTNOLA",     # Updated
-        "Las Vegas": "KXHIGHTLV",         # Updated
+        "Washington DC": "KXHIGHTDC",
+        "New Orleans": "KXHIGHTNOLA",
+        "Las Vegas": "KXHIGHTLV",
         "Miami": "KXHIGHMIA",
     }
     series_ticker = series_ticker_map.get(city_name)
@@ -202,6 +202,52 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
         return snapshot
     except Exception as e:
         return f"Kalshi error: {str(e)}"
+
+def make_time_note(city: CityConfig, obs, band):
+    tz = ZoneInfo(city.timezone)
+    now_local = datetime.now(tz)
+    obs_high = obs.get("wethr_high")
+    time_high_utc = obs.get("time_of_high_utc")
+    dt_high_utc = None
+    if time_high_utc:
+        try:
+            if time_high_utc.endswith("Z"):
+                time_high_utc = time_high_utc.replace("Z", "+00:00")
+            dt_high_utc = datetime.fromisoformat(time_high_utc)
+        except:
+            pass
+    if obs_high is None:
+        return "Observed high missing."
+    try:
+        obs_high_f = float(obs_high)
+    except:
+        return "Observed high not numeric."
+    if band is None:
+        return "Local time is late afternoon or later; today's high may already be set." if now_local.hour >= 16 else "Plenty of time left in the day for temps to move."
+    low_band, high_band = band
+    if dt_high_utc is not None:
+        dt_high_local = dt_high_utc.astimezone(tz)
+        hours_since_high = (now_local - dt_high_local).total_seconds() / 3600.0
+        if hours_since_high >= 3:
+            return "Observed high occurred several hours ago; today's high is likely already set."
+    if now_local.hour <= 11:
+        if obs_high_f < low_band - 3:
+            return "Early in the day and obs are still well below the suggested band; plenty of runway left."
+        else:
+            return "Early in the day; temps are already approaching the suggested band."
+    if 11 < now_local.hour < 16:
+        if obs_high_f < low_band:
+            return "Midday and obs are still below the suggested band; upside potential remains."
+        elif low_band <= obs_high_f <= high_band:
+            return "Midday and obs sit inside the suggested band; careful sizing / management warranted."
+        else:
+            return "Midday and obs have already exceeded the suggested band; watch for overachievement risk."
+    if obs_high_f >= high_band:
+        return "Late in the day and obs are at/above the suggested band; high is likely already in."
+    elif obs_high_f < low_band:
+        return "Late in the day and obs never reached the suggested band; underperformance vs guidance."
+    else:
+        return "Late in the day and obs are inside the suggested band; high is likely close to final."
 
 # ============= STREAMLIT APP =============
 st.set_page_config(page_title="Wethr Helper", layout="wide")
@@ -340,7 +386,8 @@ for city_name in selected_cities:
         st.markdown(f"Safe: **{center+4}°F or below YES** (B SAFE)")
 
         st.markdown("**Timing Note**")
-        st.markdown("Late in the day; high likely close to final.")
+        note = make_time_note(city, obs, band)
+        st.markdown(note)
 
         st.markdown("**Full Kalshi Snapshot**")
         st.markdown(kalshi_snapshot)
