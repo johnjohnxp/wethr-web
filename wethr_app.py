@@ -24,9 +24,9 @@ except ImportError:
 from dataclasses import dataclass
 
 # ==================== LOGIN (PERSISTENT ACROSS REFRESHES) ====================
-# Change these to your own credentials!
-CORRECT_USERNAME = "john"               # ← Your username
-CORRECT_PASSWORD = "kalshi2026secure"   # ← Your strong password
+# Changed to your requested credentials
+CORRECT_USERNAME = "admin"
+CORRECT_PASSWORD = "snc2006"
 
 # Generate a short token (hash of username + password)
 LOGIN_TOKEN = sha256((CORRECT_USERNAME + CORRECT_PASSWORD).encode()).hexdigest()[:16]
@@ -87,7 +87,7 @@ CITY_PRESETS = [
     CityConfig("New Orleans", "KMSY", "KMSY", "America/Chicago", "LIX/76,34", "29.9511,-90.0715"),
     CityConfig("Las Vegas", "KLAS", "KLAS", "America/Los_Angeles", "VEF/127,101", "36.1699,-115.1398"),
     CityConfig("Miami", "KMIA", "KMIA", "America/New_York", "MFL/64,31", "25.7617,-80.1918"),
-    CityConfig("New York City", "KJFK", "KJFK", "America/New_York", "OKX/97,71", "40.6413,-73.7781"),
+    CityConfig("New York City", "KNYC", "KNYC", "America/New_York", "OKX/97,71", "40.7789,-73.9692"),
     CityConfig("Chicago", "KORD", "KORD", "America/Chicago", "LOT/41,74", "41.8781,-87.6298"),
     CityConfig("Boston", "KBOS", "KBOS", "America/New_York", "BOX/90,71", "42.3601,-71.0589"),
 ]
@@ -170,7 +170,7 @@ def fetch_model_forecasts(city):
 def fetch_nws_gridpoint(city):
     try:
         point_url = f"https://api.weather.gov/points/{city.lat_lon}"
-        headers = {"User-Agent": "WethrHelper (johnsweather.streamlit.app)"}
+        headers = {"User-Agent": "WethrHelper"}
         r = requests.get(point_url, headers=headers, timeout=10)
         r.raise_for_status()
         point_data = r.json()["properties"]
