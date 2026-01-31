@@ -25,8 +25,8 @@ from dataclasses import dataclass
 
 # ==================== LOGIN (PERSISTENT ACROSS REFRESHES) ====================
 # Change these to your own credentials!
-CORRECT_USERNAME = "john"               # ← Your username
-CORRECT_PASSWORD = "kalshi2026secure"   # ← Your strong password
+CORRECT_USERNAME = "admin"               # ← Your username
+CORRECT_PASSWORD = "snc2006"   # ← Your strong password
 
 # Generate a short token (hash of username + password)
 LOGIN_TOKEN = sha256((CORRECT_USERNAME + CORRECT_PASSWORD).encode()).hexdigest()[:16]
