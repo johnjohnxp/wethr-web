@@ -25,8 +25,8 @@ from dataclasses import dataclass
 
 # ==================== LOGIN (PERSISTENT ACROSS REFRESHES) ====================
 # Change these to your own credentials!
-CORRECT_USERNAME = "admin"               # ← Your username
-CORRECT_PASSWORD = "snc2006"   # ← Your strong password
+CORRECT_USERNAME = "john"               # ← Your username
+CORRECT_PASSWORD = "kalshi2026secure"   # ← Your strong password
 
 # Generate a short token (hash of username + password)
 LOGIN_TOKEN = sha256((CORRECT_USERNAME + CORRECT_PASSWORD).encode()).hexdigest()[:16]
@@ -88,6 +88,9 @@ CITY_PRESETS = [
     CityConfig("New Orleans", "KMSY", "KMSY", "America/Chicago", "LIX/76,34", "29.9511,-90.0715"),
     CityConfig("Las Vegas", "KLAS", "KLAS", "America/Los_Angeles", "VEF/127,101", "36.1699,-115.1398"),
     CityConfig("Miami", "KMIA", "KMIA", "America/New_York", "MFL/64,31", "25.7617,-80.1918"),
+    CityConfig("New York City", "KJFK", "KJFK", "America/New_York", "OKX/97,71", "40.6413,-73.7781"),
+    CityConfig("Chicago", "KORD", "KORD", "America/Chicago", "LOT/41,74", "41.8781,-87.6298"),
+    CityConfig("Boston", "KBOS", "KBOS", "America/New_York", "BOX/90,71", "42.3601,-71.0589"),
 ]
 
 def auth_headers():
@@ -195,6 +198,9 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
         "New Orleans": "KXHIGHTNOLA",
         "Las Vegas": "KXHIGHTLV",
         "Miami": "KXHIGHMIA",
+        "New York City": "KXHIGHTNYC",
+        "Chicago": "KXHIGHTCHI",
+        "Boston": "KXHIGHTBOS",
     }
     series_ticker = series_ticker_map.get(city_name)
     if not series_ticker:
@@ -385,7 +391,7 @@ if refresh_interval != "Off":
     """
     countdown_placeholder.markdown(countdown_js, unsafe_allow_html=True)
 
-# Show ALL cities automatically
+# Show ALL cities automatically (now 9)
 selected_cities = [c.name for c in CITY_PRESETS]
 
 if st.button("Refresh Data Now"):
@@ -407,7 +413,7 @@ for city_name in selected_cities:
     obs_high_f = float(obs_high) if obs_high else None
 
     if len(model_highs) < 3:
-        summary_data.append({"City": city_name, "Blend": "N/A", "Spread": "N/A", "Status": "ERROR", "Band": "N/A", "Confidence": "N/A", "Observed": "N/A", "Kalshi": "N/A", "Blended Model": "N/A"})
+        summary_data.append({"City": city_name, "Original Blend": "N/A", "Blended Model": "N/A", "Spread": "N/A", "Status": "ERROR", "Band": "N/A", "Confidence": "N/A", "Observed": "N/A", "Kalshi": "N/A"})
         gefs_summary.append({"City": city_name, "GEFS Top Probs": "N/A", "Members": 0})
         continue
 
@@ -461,9 +467,12 @@ for city_name in selected_cities:
     lat, lon = city.lat_lon.split(',')
     gefs_probs, num_members, gefs_mean = fetch_gefs_probs(lat, lon)
     blended_mean = blend
+    blended_shift = 0.0
     if gefs_mean is not None:
         blended_mean = 0.7 * blend + 0.3 * gefs_mean  # 70% your model, 30% GEFS
-        st.info(f"Blended mean: {blended_mean:.1f}°F (70% your model + 30% GEFS)")
+        blended_shift = blended_mean - blend
+        shift_note = f"+{blended_shift:.1f}°F" if blended_shift > 0 else f"{blended_shift:.1f}°F"
+        st.info(f"Blended mean: {blended_mean:.1f}°F ({shift_note} from original — 70% your model + 30% GEFS)")
     gefs_text = "N/A"
     if gefs_probs:
         sorted_probs = sorted(gefs_probs.items(), key=lambda x: x[1], reverse=True)[:5]
@@ -482,15 +491,18 @@ for city_name in selected_cities:
 
     # Log this prediction for accuracy tracking
     actual_high = obs_high_f if obs_high_f else "Unknown"
-    error = blended_mean - float(actual_high) if actual_high != "Unknown" else "N/A"
+    error_original = blend - float(actual_high) if actual_high != "Unknown" else "N/A"
+    error_blended = blended_mean - float(actual_high) if actual_high != "Unknown" else "N/A"
     bin_hit = "Yes" if band[0] <= float(actual_high) <= band[1] else "No" if actual_high != "Unknown" else "N/A"
     log_row = {
         "Date": datetime.now().strftime("%Y-%m-%d"),
         "Time": datetime.now().strftime("%H:%M:%S"),
         "City": city_name,
-        "Predicted Blend": round(blended_mean, 1),
+        "Original Blend": round(blend, 1),
+        "Blended Model": round(blended_mean, 1),
         "Actual High": actual_high,
-        "Error (°F)": round(error, 1) if isinstance(error, (int, float)) else error,
+        "Original Error (°F)": round(error_original, 1) if isinstance(error_original, (int, float)) else error_original,
+        "Blended Error (°F)": round(error_blended, 1) if isinstance(error_blended, (int, float)) else error_blended,
         "Status": status,
         "Confidence": prob_in_band,
         "Bin Hit": bin_hit,
@@ -499,7 +511,7 @@ for city_name in selected_cities:
     }
     log_rows.append(log_row)
 
-    # Collect for summary table (now with Blended Model column)
+    # Collect for summary table (now with Original Blend and Blended Model)
     summary_data.append({
         "City": city_name,
         "Original Blend": f"{blend:.1f}°F",
@@ -555,7 +567,7 @@ for city_name in selected_cities:
         st.markdown("**Full Kalshi Snapshot**")
         st.markdown(kalshi_snapshot)
 
-# Bottom summary box (best to worst) — now with Blended Model column
+# Bottom summary box (best to worst) — now with Original Blend and Blended Model
 if summary_data:
     st.markdown("### All Cities Summary (Best → Worst)")
     df = pd.DataFrame(summary_data)
