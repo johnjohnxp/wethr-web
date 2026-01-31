@@ -4,7 +4,6 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from statistics import stdev
-from collections import Counter
 import requests
 import re
 import pandas as pd
@@ -99,7 +98,7 @@ def fetch_model_forecasts(city):
         valid_time = rec.get("valid_time")
         model_hourly[model].append((valid_time, temp))
         if model_highs[model] is None or temp > model_highs[model]:
-            model_highs = temp
+            model_highs[model] = temp  # FIXED: Update the dict value, not overwrite the dict
     highs = {m: v for m, v in model_highs.items() if v is not None}
     return highs, model_hourly
 
@@ -124,7 +123,6 @@ def fetch_nws_gridpoint(city):
         st.warning(f"NWS gridpoint error: {e}")
         return None
 
-# ============= KALSHI PUBLIC FETCH =============
 def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, exact_grade):
     KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
     series_ticker_map = {
@@ -136,20 +134,19 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
         "Miami": "KXHIGHMIA",
     }
     series_ticker = series_ticker_map.get(city_name)
-    if not series_ticker: return f"No ticker for {city_name}."
-
-    logging.info(f"Fetching Kalshi for {city_name} using ticker: {series_ticker}")
+    if not series_ticker:
+        return f"No ticker for {city_name}."
 
     try:
         url = f"{KALSHI_BASE}/markets?series_ticker={series_ticker}&status=open&limit=50"
         r = requests.get(url, timeout=10)
         r.raise_for_status()
         markets = r.json().get("markets", [])
-        if not markets: return f"No open markets for {series_ticker}. (Possibly settled or wrong ticker)"
+        if not markets:
+            return f"No open markets for {series_ticker}."
 
         bin_dict = {}
         implied_high = None
-        max_yes = 0
         for m in markets:
             title = m.get("title", "").lower()
             match = re.search(r'(\d+)[ -]to[ -](\d+)', title) or re.search(r'(\d+)-(\d+)', title)
@@ -171,12 +168,12 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
                 old['ask'] = (old['ask'] + ask) / 2
             else:
                 bin_dict[bin_key] = {'yes_prob': yes_prob, 'bid': bid, 'ask': ask, 'volume': vol}
-            if yes_prob > max_yes:
-                max_yes = yes_prob
+            if yes_prob > (implied_high or 0):
                 implied_high = (low + high) / 2
-        if not bin_dict: return "No parsable bins."
+        if not bin_dict:
+            return "No parsable bins."
         bin_data = sorted(bin_dict.items(), key=lambda x: int(x[0].split('-')[0]))
-        snapshot = f"Live Kalshi Bins for {city_name}:\n"
+        snapshot = f"Live Kalshi Bins for {city_name}:\n\n"
         for bin_key, b in bin_data:
             prob = f"{b['yes_prob']:.0%}" if b['yes_prob'] > 0 else "N/A"
             ba = f"bid {b['bid']:.2f}–ask {b['ask']:.2f}" if b['bid'] or b['ask'] else ""
@@ -204,7 +201,6 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
                     pass
         return snapshot
     except Exception as e:
-        logging.warning(f"Kalshi error for {city_name}: {e}")
         return f"Kalshi error: {str(e)}"
 
 # ============= STREAMLIT APP =============
@@ -235,7 +231,7 @@ if refresh_interval != "Off":
         remaining--;
         document.getElementById("countdown").innerText = Math.floor(remaining / 60) + " min " + (remaining % 60) + " sec";
         if (remaining <= 0) {{
-            clearInterval(timer)
+            clearInterval(timer);
             window.location.reload();
         }}
     }}, 1000);
