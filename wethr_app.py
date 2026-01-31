@@ -109,12 +109,14 @@ def fetch_model_forecasts(city):
             dew = float(dew_raw) if dew_raw is not None else None
             wind = float(wind_raw) if wind_raw is not None else None
             cloud = float(cloud_raw) if cloud_raw is not None else None
-        except: continue
+        except:
+            continue
         valid_time = rec.get("valid_time")
         if valid_time is None: continue
         try:
             valid_time = datetime.fromisoformat(valid_time.replace("Z", "+00:00"))
-        except: continue
+        except:
+            continue
         model_hourly[model].append((valid_time, temp))
         if dew is not None: model_dew[model].append((valid_time, dew))
         if wind is not None: model_wind[model].append((valid_time, wind))
@@ -354,6 +356,7 @@ if st.button("Refresh Data Now"):
     st.rerun()
 
 summary_data = []
+gefs_summary = []  # For new GEFS table
 log_rows = []  # For CSV logging
 for city_name in selected_cities:
     city = next(c for c in CITY_PRESETS if c.name == city_name)
@@ -369,6 +372,7 @@ for city_name in selected_cities:
 
     if len(model_highs) < 3:
         summary_data.append({"City": city_name, "Blend": "N/A", "Spread": "N/A", "Status": "ERROR", "Band": "N/A", "Confidence": "N/A", "Observed": "N/A", "Kalshi": "N/A"})
+        gefs_summary.append({"City": city_name, "GEFS Probs": "N/A", "Members": 0})
         continue
 
     vals = list(model_highs.values())
@@ -420,11 +424,13 @@ for city_name in selected_cities:
     # NOAA GEFS ensembles for bin probs
     lat, lon = city.lat_lon.split(',')
     gefs_probs, num_members = fetch_gefs_probs(lat, lon)
+    gefs_text = "N/A"
     if gefs_probs:
-        st.markdown("**GEFS Ensemble Probs**")
-        for bin_range, prob in gefs_probs.items():
-            st.markdown(f"{bin_range}°F: {prob:.0f}%")
+        # Sort by probability descending, show top 5
+        sorted_probs = sorted(gefs_probs.items(), key=lambda x: x[1], reverse=True)[:5]
+        gefs_text = "<br>".join([f"{bin_range}°F: {prob:.0f}%" for bin_range, prob in sorted_probs])
         st.info(f"GEFS ensemble ({num_members} members) added for prob % per bin")
+    gefs_summary.append({"City": city_name, "GEFS Probs (Top)": gefs_text, "Members": num_members})
 
     diff_nws = abs(blend - nws_high) if nws_high else None
     status = "GREEN" if spread <= 3.0 and (diff_nws or 999) <= 1.5 else \
@@ -526,6 +532,12 @@ if summary_data:
 
     styled_df = df.style.applymap(color_status, subset=['Status'])
     st.dataframe(styled_df, width='stretch')  # Fixed deprecation
+
+# New consolidated GEFS summary table at the bottom
+if gefs_summary:
+    st.markdown("### GEFS Ensemble Probabilities – All Cities")
+    gefs_df = pd.DataFrame(gefs_summary)
+    st.dataframe(gefs_df, width='stretch')
 
 # Auto-log predictions to CSV (appends new rows each run)
 if log_rows:
