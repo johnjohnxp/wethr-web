@@ -29,7 +29,7 @@ FORECASTS_URL = "https://wethr.net/api/v2/forecasts.php"
 NWS_URL = "https://wethr.net/api/v2/nws_forecasts.php"
 TARGET_MODELS = ["HRRR", "NAM", "NBM", "ECMWF-IFS"]
 MODEL_WEIGHTS_BASE = {'HRRR': 0.35, 'NAM': 0.25, 'NBM': 0.25, 'ECMWF-IFS': 0.15}
-LOG_FILE = "prediction_log.csv"  # Will be saved in repo
+LOG_FILE = "prediction_log.csv"  # Saved in repo
 
 @dataclass
 class CityConfig:
@@ -61,14 +61,17 @@ def todays_local_day_range_utc(tz_name):
     end_utc = end_local.astimezone(timezone.utc).replace(microsecond=0)
     return start_utc.isoformat().replace("+00:00", "Z"), end_utc.isoformat().replace("+00:00", "Z")
 
-def fetch_data(url, params):
-    try:
-        r = requests.get(url, params=params, headers=auth_headers(), timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.error(f"API error: {e}")
-        return {}
+def fetch_data(url, params, retries=3):
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, params=params, headers=auth_headers(), timeout=10)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            st.warning(f"Fetch error on {url} (attempt {attempt+1}): {e}")
+            time.sleep(2)
+    st.error(f"Failed {url} after {retries} attempts.")
+    return {}
 
 def fetch_observed_high(city):
     params = {"station_code": city.station_code, "mode": "wethr_high", "logic": "nws"}
@@ -106,14 +109,12 @@ def fetch_model_forecasts(city):
             dew = float(dew_raw) if dew_raw is not None else None
             wind = float(wind_raw) if wind_raw is not None else None
             cloud = float(cloud_raw) if cloud_raw is not None else None
-        except:
-            continue
+        except: continue
         valid_time = rec.get("valid_time")
         if valid_time is None: continue
         try:
             valid_time = datetime.fromisoformat(valid_time.replace("Z", "+00:00"))
-        except:
-            continue
+        except: continue
         model_hourly[model].append((valid_time, temp))
         if dew is not None: model_dew[model].append((valid_time, dew))
         if wind is not None: model_wind[model].append((valid_time, wind))
@@ -226,18 +227,32 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
 
 def fetch_gefs_probs(lat, lon):
     try:
-        url = f"https://ensemble-api.open-meteo.com/v1/ensemble?latitude={lat}&longitude={lon}&hourly=temperature_2m&models=gefs"
+        url = (
+            f"https://api.open-meteo.com/v1/forecast?"
+            f"latitude={lat}&longitude={lon}"
+            f"&hourly=temperature_2m"
+            f"&temperature_unit=fahrenheit"
+            f"&forecast_days=1"
+            f"&ensemble=true"
+        )
         r = requests.get(url, timeout=15)
         r.raise_for_status()
         data = r.json()
         hourly_temps = data["hourly"]["temperature_2m"]
-        daily_maxes = [max(member[:48]) for member in zip(*hourly_temps)]  # First 48 hours
+        daily_maxes = []
+        step = len(hourly_temps) // 30  # Approx 30 members
+        for i in range(0, len(hourly_temps), step):
+            member_temps = hourly_temps[i:i+48]  # Approx 48 hours
+            if member_temps:
+                daily_maxes.append(max(member_temps))
+        if not daily_maxes:
+            return {}, 0
         bin_counts = Counter(round(max_temp) for max_temp in daily_maxes)
         total = len(daily_maxes)
         probs = {f"{k}-{k+1}": (count / total * 100) for k, count in sorted(bin_counts.items())}
         return probs, total
     except Exception as e:
-        st.warning(f"GEFS ensemble error: {e}")
+        st.warning(f"GFS ensemble error: {e}")
         return {}, 0
 
 def make_time_note(city: CityConfig, obs, band):
@@ -396,7 +411,7 @@ for city_name in selected_cities:
     if dew_bias or wind_bias or cloud_bias:
         st.info(f"Biases applied: Dew {dew_bias:.1f}°F, Wind {wind_bias:.1f}°F, Cloud {cloud_bias:.1f}°F")
 
-    # NOAA GEFS ensembles for bin probs
+    # NOAA GEFS ensembles for bin probs (fixed URL)
     lat, lon = city.lat_lon.split(',')
     gefs_probs, num_members = fetch_gefs_probs(lat, lon)
     if gefs_probs:
