@@ -508,7 +508,6 @@ if summary_data:
 
 # Auto-log predictions to CSV (appends new rows each run)
 if log_rows:
-    # Header if file doesn't exist
     file_exists = os.path.exists(LOG_FILE)
     with open(LOG_FILE, 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=log_rows[0].keys())
