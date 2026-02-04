@@ -23,7 +23,7 @@ except ImportError:
 
 from dataclasses import dataclass
 
-# ==================== LOGIN (PERSISTENT ACROSS REFRESHES) ====================
+# ==================== LOGIN ====================
 CORRECT_USERNAME = "admin"
 CORRECT_PASSWORD = "snc2006"
 
@@ -50,7 +50,7 @@ if not st.session_state.logged_in:
                 st.success("Logged in! Refreshing...")
                 st.rerun()
             else:
-                st.error("Incorrect username or password. Try again.")
+                st.error("Incorrect credentials.")
     st.stop()
 
 # Logout button
@@ -73,6 +73,8 @@ TARGET_MODELS = ["HRRR", "NAM", "NBM", "ECMWF-IFS"]
 MODEL_WEIGHTS_BASE = {'HRRR': 0.35, 'NAM': 0.25, 'NBM': 0.25, 'ECMWF-IFS': 0.15}
 LOG_FILE = "prediction_log.csv"
 EST_TZ = ZoneInfo("America/New_York")
+
+COASTAL_CITIES = ["Seattle", "San Francisco", "Miami"]
 
 @dataclass
 class CityConfig:
@@ -426,11 +428,16 @@ selected_cities = [c.name for c in CITY_PRESETS]
 if st.button("Refresh Data Now"):
     st.rerun()
 
+if st.button("Clear Prediction Log"):
+    open(LOG_FILE, 'w').close()
+    st.success("Log cleared!")
+
 summary_data = []
 gefs_summary = []
 log_rows = []
 
 last_gefs_run = fetch_gefs_last_run_time()
+stale, age = is_gefs_stale(last_gefs_run)
 
 for city_name in selected_cities:
     city = next(c for c in CITY_PRESETS if c.name == city_name)
@@ -495,10 +502,15 @@ for city_name in selected_cities:
     blended_mean = blend
     blended_shift = 0.0
     if gefs_mean is not None:
-        blended_mean = 0.7 * blend + 0.3 * gefs_mean
+        gefs_weight = 0.3
+        if now_hour > 15:
+            gefs_weight = 0.4
+        if city_name in COASTAL_CITIES:
+            gefs_weight *= 0.67
+        blended_mean = (1 - gefs_weight) * blend + gefs_weight * gefs_mean
         blended_shift = blended_mean - blend
         shift_note = f"+{blended_shift:.1f}°F" if blended_shift > 0 else f"{blended_shift:.1f}°F"
-        st.info(f"Blended mean: {blended_mean:.1f}°F ({shift_note} from original — 70% your model + 30% GEFS)")
+        st.info(f"Blended mean: {blended_mean:.1f}°F ({shift_note} from original — dynamic weight {gefs_weight:.0%} GEFS)")
     gefs_text = "N/A"
     if gefs_probs:
         sorted_probs = sorted(gefs_probs.items(), key=lambda x: x[1], reverse=True)[:5]
@@ -532,7 +544,9 @@ for city_name in selected_cities:
         "Confidence": prob_in_band,
         "Bin Hit": bin_hit,
         "Spread": round(spread, 1),
-        "NWS Diff": round(diff_nws, 1) if diff_nws is not None else "N/A"
+        "NWS Diff": round(diff_nws, 1) if diff_nws is not None else "N/A",
+        "Adjusted Prediction": round(blended_mean, 1),
+        "GEFS Mean": round(gefs_mean, 1) if gefs_mean else "N/A"
     }
     log_rows.append(log_row)
 
@@ -613,14 +627,21 @@ if gefs_summary:
 
 # NEW: GEFS Status & Current Adjusted Bin Prediction
 st.markdown("### GEFS Status & Current Adjusted Bin Prediction")
-st.write(f"**Last GEFS Run Time (EST)**: {datetime.strptime(last_gefs_run.split(' (')[0], '%d %b %Y %H:%M GMT').astimezone(EST_TZ).strftime('%Y-%m-%d %I:%M %p EST') if 'GMT' in last_gefs_run else last_gefs_run}")
+
+col_run, col_note = st.columns([3, 1])
+with col_run:
+    st.write(f"**Last GEFS Run Time (EST)**: {datetime.strptime(last_gefs_run.split(' (')[0], '%d %b %Y %H:%M GMT').astimezone(EST_TZ).strftime('%Y-%m-%d %I:%M %p EST') if 'GMT' in last_gefs_run else last_gefs_run}")
+
+with col_note:
+    if stale:
+        st.warning(f"Stale ({age:.0f}h)", icon="⚠️")
 
 for city_name in selected_cities:
     lat, lon = [c.lat_lon for c in CITY_PRESETS if c.name == city_name][0].split(',')
     gefs_probs, _, gefs_mean = fetch_gefs_probs(float(lat), float(lon))
 
     if not gefs_probs:
-        st.write(f"{city_name}: No GEFS data available")
+        st.write(f"{city_name}: No GEFS data")
         continue
 
     bias = 0
@@ -638,13 +659,18 @@ for city_name in selected_cities:
         new_bin = f"{new_low}-{new_high}"
         adjusted_probs[new_bin] = adjusted_probs.get(new_bin, 0) + prob
 
-    sorted_adjusted = sorted(adjusted_probs.items(), key=lambda x: x[1], reverse=True)[:5]
-    top_text = "<br>".join([f"{bin_range}°F: {prob:.0f}%" for bin_range, prob in sorted_adjusted])
+    # Filter meaningful bins (≥5%)
+    filtered = {k: v for k, v in adjusted_probs.items() if v >= 5}
+
+    # Sort highest → lowest
+    sorted_filtered = sorted(filtered.items(), key=lambda x: x[1], reverse=True)
+
+    top_text = "<br>".join([f"**{bin_range}°F**: {prob:.0f}%" for bin_range, prob in sorted_filtered])
 
     cumulative = 0
     range_low = None
     range_high = None
-    for bin_range, prob in sorted_adjusted:
+    for bin_range, prob in sorted_filtered:
         low, high = map(int, bin_range.split('-'))
         if range_low is None:
             range_low = low
@@ -652,12 +678,12 @@ for city_name in selected_cities:
         cumulative += prob
         if cumulative >= 65:
             break
-    likely_range = f"{range_low}–{range_high}°F ({cumulative:.0f}% prob)"
+    likely_range = f"**{range_low}–{range_high}°F** ({cumulative:.0f}% probability)"
 
-    st.markdown(f"**{city_name}**")
-    st.markdown(f"**Likely Range**: {likely_range}")
-    st.markdown(f"**Top Adjusted Bins**:<br>{top_text}")
-    st.markdown("---")
+    with st.expander(f"{city_name}", expanded=True):
+        st.markdown(f"**Most Likely Range**: {likely_range}")
+        st.markdown("**Top Adjusted Bins** (highest → lowest):")
+        st.markdown(top_text)
 
 # Auto-log predictions to CSV (appends new rows each run)
 if log_rows:
