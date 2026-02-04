@@ -23,7 +23,7 @@ except ImportError:
 
 from dataclasses import dataclass
 
-# ==================== LOGIN (PERSISTENT ACROSS REFRESHES) ====================
+# ==================== LOGIN ====================
 CORRECT_USERNAME = "admin"
 CORRECT_PASSWORD = "snc2006"
 
@@ -47,10 +47,10 @@ if not st.session_state.logged_in:
             if username == CORRECT_USERNAME and password == CORRECT_PASSWORD:
                 st.session_state.logged_in = True
                 st.query_params["token"] = LOGIN_TOKEN
-                st.success("Logged in successfully! Refreshing...")
+                st.success("Logged in! Refreshing...")
                 st.rerun()
             else:
-                st.error("Incorrect username or password. Try again.")
+                st.error("Incorrect credentials.")
     st.stop()
 
 # ==================== DASHBOARD ====================
@@ -351,7 +351,6 @@ def make_time_note(city: CityConfig, obs, band):
         return "Late in the day and obs are inside the suggested band; high is likely close to final."
 
 # ============= STREAMLIT APP =============
-# Top auto-refresh selector (small & sleek)
 col_refresh1, col_refresh2 = st.columns([3, 1])
 with col_refresh1:
     refresh_interval = st.selectbox(
@@ -368,7 +367,6 @@ if refresh_interval != "Off":
     countdown_placeholder = st.empty()
     countdown_placeholder.markdown(f"Next refresh in...")
 
-    # Non-blocking JS countdown
     countdown_js = f"""
     <script>
     const seconds = {interval_seconds};
@@ -386,20 +384,18 @@ if refresh_interval != "Off":
     """
     countdown_placeholder.markdown(countdown_js, unsafe_allow_html=True)
 
-# Show ALL cities automatically
 selected_cities = [c.name for c in CITY_PRESETS]
 
 if st.button("Refresh Data Now"):
     st.rerun()
 
 summary_data = []
-gefs_summary = []  # For consolidated GEFS table
-log_rows = []  # For CSV logging
+gefs_summary = []
+log_rows = []
 
 for city_name in selected_cities:
     city = next(c for c in CITY_PRESETS if c.name == city_name)
 
-    # Fetch data
     obs = fetch_observed_high(city)
     nws = fetch_nws_high(city)
     model_highs, model_hourly, model_dew, model_wind, model_cloud = fetch_model_forecasts(city)
@@ -428,7 +424,6 @@ for city_name in selected_cities:
     if nws_grid:
         blend = 0.7 * blend + 0.3 * nws_grid
 
-    # Rise-rate adjustment (from HRRR hourly)
     rise_rate = 0
     if 'HRRR' in model_hourly and len(model_hourly['HRRR']) >= 3:
         recent = sorted(model_hourly['HRRR'][-3:], key=lambda x: x[0])
@@ -436,14 +431,11 @@ for city_name in selected_cities:
         if time_diff > 0:
             rise_rate = (recent[-1][1] - recent[0][1]) / time_diff
     if rise_rate > 1.5:
-        adjustment = min(1.0, rise_rate * 0.3)  # Cap at +1°F
+        adjustment = min(1.0, rise_rate * 0.3)
         blend += adjustment
         st.info(f"Rise rate {rise_rate:.1f}°F/hr — blend adjusted +{adjustment:.1f}°F")
 
-    # Dew point / wind / cloud bias
-    dew_bias = 0
-    wind_bias = 0
-    cloud_bias = 0
+    dew_bias = wind_bias = cloud_bias = 0
     for m in TARGET_MODELS:
         if model_dew.get(m) and len(model_dew[m]) > 0:
             avg_dew = sum(d[1] for d in model_dew[m]) / len(model_dew[m])
@@ -459,13 +451,12 @@ for city_name in selected_cities:
     if dew_bias or wind_bias or cloud_bias:
         st.info(f"Biases applied: Dew {dew_bias:.1f}°F, Wind {wind_bias:.1f}°F, Cloud {cloud_bias:.1f}°F")
 
-    # NOAA GEFS ensembles for bin probs + mean
     lat, lon = city.lat_lon.split(',')
     gefs_probs, num_members, gefs_mean = fetch_gefs_probs(lat, lon)
     blended_mean = blend
     blended_shift = 0.0
     if gefs_mean is not None:
-        blended_mean = 0.7 * blend + 0.3 * gefs_mean  # 70% your model, 30% GEFS
+        blended_mean = 0.7 * blend + 0.3 * gefs_mean
         blended_shift = blended_mean - blend
         shift_note = f"+{blended_shift:.1f}°F" if blended_shift > 0 else f"{blended_shift:.1f}°F"
         st.info(f"Blended mean: {blended_mean:.1f}°F ({shift_note} from original — 70% your model + 30% GEFS)")
@@ -479,13 +470,12 @@ for city_name in selected_cities:
     status = "GREEN" if spread <= 3.0 and (diff_nws or 999) <= 1.5 else \
              "YELLOW" if spread <= 4.0 and (diff_nws or 999) <= 2.0 else "RED"
 
-    center = round(blended_mean)  # Use blended mean for center/band
+    center = round(blended_mean)
     band = (center - 1, center + 1)
     prob_in_band = 68 if std < 1.5 else 50 if std < 2.5 else 30
 
     kalshi_snapshot = fetch_kalshi_market(city_name, blended_mean, status, "TODO exact", "TODO safe", "TODO grade")
 
-    # Log this prediction for accuracy tracking
     actual_high = obs_high_f if obs_high_f else "Unknown"
     error_original = blend - float(actual_high) if actual_high != "Unknown" else "N/A"
     error_blended = blended_mean - float(actual_high) if actual_high != "Unknown" else "N/A"
@@ -507,7 +497,6 @@ for city_name in selected_cities:
     }
     log_rows.append(log_row)
 
-    # Collect for summary table (now with Original Blend and Blended Model)
     summary_data.append({
         "City": city_name,
         "Original Blend": f"{blend:.1f}°F",
@@ -520,9 +509,7 @@ for city_name in selected_cities:
         "Kalshi": kalshi_snapshot[:200] + "..." if kalshi_snapshot else "N/A"
     })
 
-    # City expander - auto-expand if GREEN
     with st.expander(f"📍 {city.name} - Detailed Report", expanded=(status == "GREEN")):
-        # Metrics row
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Original Blend", f"{blend:.1f}°F")
         col2.metric("Blended Model", f"{blended_mean:.1f}°F")
@@ -537,7 +524,6 @@ for city_name in selected_cities:
         else:
             st.error("🔴 RED — noisy setup.")
 
-        # Extra details
         st.markdown("**Model Highs**")
         model_df = pd.DataFrame([
             {"Model": m, "High": f"{model_highs.get(m, 'N/A'):.1f}°F" if model_highs.get(m) else "N/A"}
@@ -563,7 +549,7 @@ for city_name in selected_cities:
         st.markdown("**Full Kalshi Snapshot**")
         st.markdown(kalshi_snapshot)
 
-# Bottom summary box (best to worst) — now with Original Blend and Blended Model
+# Bottom summary box (best to worst)
 if summary_data:
     st.markdown("### All Cities Summary (Best → Worst)")
     df = pd.DataFrame(summary_data)
@@ -578,9 +564,9 @@ if summary_data:
         return ''
 
     styled_df = df.style.applymap(color_status, subset=['Status'])
-    st.dataframe(styled_df, width='stretch')  # Fixed deprecation
+    st.dataframe(styled_df, width='stretch')
 
-# Consolidated GEFS summary table at the bottom (all cities together)
+# Consolidated GEFS summary table
 if gefs_summary:
     st.markdown("### GEFS Ensemble Probabilities – All Cities")
     gefs_df = pd.DataFrame(gefs_summary)
@@ -592,17 +578,12 @@ if log_rows:
 
     with open(LOG_FILE, 'a', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=log_rows[0].keys())
-
-        # Write header only if file is new or empty
         if not file_exists:
             writer.writeheader()
-
         writer.writerows(log_rows)
 
-    # Show confirmation (can remove later)
     st.success(f"Logged {len(log_rows)} cities to prediction_log.csv")
 
-    # Show download button
     with open(LOG_FILE, 'rb') as f:
         st.download_button(
             label="Download Full Prediction Log (CSV)",
