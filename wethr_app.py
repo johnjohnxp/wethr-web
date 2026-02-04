@@ -11,6 +11,11 @@ import pandas as pd
 import warnings
 import csv
 from hashlib import sha256
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 
 warnings.filterwarnings("ignore", category=Warning)
 
@@ -42,13 +47,6 @@ USERS = {
 def check_login():
     if st.session_state.logged_in:
         return True
-    if 'token' in st.query_params:
-        token = st.query_params['token'][0]
-        for u, pw_hash in USERS.items():
-            if sha256((u + pw_hash).encode()).hexdigest()[:16] == token:
-                st.session_state.logged_in = True
-                st.session_state.user = u
-                return True
     return False
 
 if not check_login():
@@ -63,7 +61,6 @@ if not check_login():
             if username in USERS and USERS[username] == pw_hash:
                 st.session_state.logged_in = True
                 st.session_state.user = username
-                st.query_params["token"] = sha256((username + pw_hash).encode()).hexdigest()[:16]
                 st.success("Logged in!")
                 st.rerun()
             else:
@@ -74,8 +71,26 @@ if not check_login():
 if st.button("Logout"):
     st.session_state.logged_in = False
     st.session_state.user = None
+    st.session_state.dev_mode = False
     st.query_params.clear()
     st.rerun()
+
+# Password change form (for admin)
+if st.session_state.user == "admin":
+    with st.expander("Change Password"):
+        with st.form(key="change_pw"):
+            new_pw = st.text_input("New Password", type="password")
+            confirm_pw = st.text_input("Confirm New Password", type="password")
+            submit_pw = st.form_submit_button("Update Password")
+
+            if submit_pw:
+                if new_pw == confirm_pw and new_pw:
+                    USERS["admin"] = sha256(new_pw.encode()).hexdigest()
+                    st.success("Password updated! Log in again.")
+                    st.session_state.logged_in = False
+                    st.rerun()
+                else:
+                    st.error("Passwords don't match or empty.")
 
 # Developer mode toggle
 if st.button("Toggle Developer Mode"):
@@ -98,8 +113,18 @@ NWS_URL = "https://wethr.net/api/v2/nws_forecasts.php"
 TARGET_MODELS = ["HRRR", "NAM", "NBM", "ECMWF-IFS"]
 MODEL_WEIGHTS_BASE = {'HRRR': 0.35, 'NAM': 0.25, 'NBM': 0.25, 'ECMWF-IFS': 0.15}
 LOG_FILE = "prediction_log.csv"
+EMAIL_FROM = "your_email@gmail.com"  # Replace with your email
+EMAIL_PASS = "your_app_password"  # Replace with your app password (for Gmail)
+EMAIL_TO = "your_email@gmail.com"  # Your email for sending
 
-COASTAL_CITIES = ["Seattle", "San Francisco", "Miami", "Los Angeles"]  # lower GEFS weight
+@dataclass
+class CityConfig:
+    name: str
+    station_code: str
+    location_name: str
+    timezone: str
+    gridpoint: str
+    lat_lon: str
 
 CITY_PRESETS = [
     CityConfig("Seattle", "KSEA", "KSEA", "America/Los_Angeles", "SEW/125,131", "47.6062,-122.3321"),
@@ -111,9 +136,33 @@ CITY_PRESETS = [
     CityConfig("New York City", "KNYC", "KNYC", "America/New_York", "OKX/97,71", "40.7789,-73.9692"),
     CityConfig("Chicago", "KORD", "KORD", "America/Chicago", "LOT/41,74", "41.8781,-87.6298"),
     CityConfig("Boston", "KBOS", "KBOS", "America/New_York", "BOX/90,71", "42.3601,-71.0589"),
-    CityConfig("Los Angeles", "KLAX", "KLAX", "America/Los_Angeles", "LOX/127,101", "34.0522,-118.2437"),
-    CityConfig("Denver", "KDEN", "KDEN", "America/Denver", "BOU/105,39", "39.7392,-104.9903"),
-    CityConfig("Austin", "KAUS", "KAUS", "America/Chicago", "EWX/97,30", "30.2672,-97.7431"),
+    # Added from your list
+    CityConfig("Chicago Midway", "KMDW", "KMDW", "America/Chicago", "LOT/41,74", "41.8781,-87.6298"),
+    CityConfig("Philadelphia", "KPHL", "KPHL", "America/New_York", "PHI/97,71", "39.9526,-75.1652"),
+    CityConfig("Miami", "KMIA", "KMIA", "America/New_York", "MFL/64,31", "25.7617,-80.1918"),
+    CityConfig("Los Angeles", "KLAX", "KLAX", "America/Los_Angeles", "LOX/94,70", "33.9416,-118.4085"),
+    CityConfig("Denver", "KDEN", "KDEN", "America/Denver", "BOU/75,57", "39.7392,-104.9903"),
+    CityConfig("Austin", "KAUS", "KAUS", "America/Chicago", "EWX/84,57", "30.2672,-97.7431"),
+    CityConfig("New York (Central Park)", "KNYC", "KNYC", "America/New_York", "OKX/97,71", "40.7789,-73.9692"),
+    CityConfig("Dallas/Fort Worth", "KDFW", "KDFW", "America/Chicago", "FWD/76,34", "32.7767,-96.7969"),
+    CityConfig("New Orleans", "KMSY", "KMSY", "America/Chicago", "LIX/76,34", "29.9511,-90.0715"),
+    CityConfig("New York LaGuardia", "KLGA", "KLGA", "America/New_York", "OKX/97,71", "40.7794,-73.8803"),
+    CityConfig("Dallas Love Field", "KDAL", "KDAL", "America/Chicago", "FWD/76,34", "32.7767,-96.7969"),
+    CityConfig("Houston Hobby", "KHOU", "KHOU", "America/Chicago", "HGX/76,34", "29.7604,-95.3698"),
+    CityConfig("Seattle", "KSEA", "KSEA", "America/Los_Angeles", "SEW/125,131", "47.6062,-122.3321"),
+    CityConfig("San Francisco", "KSFO", "KSFO", "America/Los_Angeles", "MTR/94,70", "37.7749,-122.4194"),
+    CityConfig("Las Vegas", "KLAS", "KLAS", "America/Los_Angeles", "VEF/127,101", "36.1699,-115.1398"),
+    CityConfig("Phoenix", "KPHX", "KPHX", "America/Phoenix", "PSR/127,101", "33.4484,-112.0740"),
+    CityConfig("San Antonio", "KSAT", "KSAT", "America/Chicago", "EWX/84,57", "29.4241,-98.4936"),
+    CityConfig("Washington D.C.", "KDCA", "KDCA", "America/New_York", "LWX/97,71", "38.9072,-77.0369"),
+    CityConfig("Charlotte", "KCLT", "KCLT", "America/New_York", "GSP/90,71", "35.2271,-80.8431"),
+    CityConfig("Boston", "KBOS", "KBOS", "America/New_York", "BOX/90,71", "42.3601,-71.0589"),
+    CityConfig("Nashville", "KBNA", "KBNA", "America/Chicago", "OHX/76,34", "36.1627,-86.7878"),
+    CityConfig("Atlanta", "KATL", "KATL", "America/New_York", "FFC/90,71", "33.7490,-84.3880"),
+    CityConfig("Jacksonville", "KJAX", "KJAX", "America/New_York", "JAX/90,71", "30.3322,-81.6557"),
+    CityConfig("Oklahoma City", "KOKC", "KOKC", "America/Chicago", "OUN/76,34", "35.4676,-97.5164"),
+    CityConfig("Detroit", "KDTW", "KDTW", "America/Detroit", "DTX/97,71", "42.3314,-83.0458"),
+    CityConfig("Minneapolis", "KMSP", "KMSP", "America/Chicago", "MPX/97,71", "44.9778,-93.2650"),
 ]
 
 def auth_headers():
@@ -312,7 +361,7 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
                 else:
                     closest_key = min(bin_dict, key=lambda k: abs((int(k.split('-')[0]) + int(k.split('-')[1])) / 2 - blend))
                     closest = bin_dict[closest_key]
-                    diff = abs((int(closest_key.split('-')[0]) + int(k.split('-')[1])) / 2 - blend)
+                    diff = abs((int(closest_key.split('-')[0]) + int(closest_key.split('-')[1])) / 2 - blend)
                     snapshot += f"→ Closest: {closest_key} at {closest['yes_prob']:.0%} (Δ {diff:.1f}°F)\n"
             if safe_play_str != "--" and "below" in safe_play_str.lower():
                 try:
@@ -454,16 +503,12 @@ selected_cities = [c.name for c in CITY_PRESETS]
 if st.button("Refresh Data Now"):
     st.rerun()
 
-if st.button("Clear Prediction Log"):
-    open(LOG_FILE, 'w').close()
-    st.success("Log cleared!")
-
 summary_data = []
 gefs_summary = []
 log_rows = []
 
+# Fetch last run time once
 last_gefs_run = fetch_gefs_last_run_time()
-stale, age = is_gefs_stale(last_gefs_run)
 
 for city_name in selected_cities:
     city = next(c for c in CITY_PRESETS if c.name == city_name)
@@ -487,8 +532,8 @@ for city_name in selected_cities:
     if now_hour > 12:
         weights['HRRR'] += 0.1
         weights['NAM'] += 0.1
-    total = sum(weights.values())
-    weights = {k: v/total for k, v in weights.items()}
+        total = sum(weights.values())
+        weights = {k: v/total for k, v in weights.items()}
     blend = sum(weights.get(m, 0) * model_highs.get(m, 0) for m in TARGET_MODELS)
     spread = max(vals) - min(vals)
     std = stdev(vals) if len(vals) > 1 else 0
@@ -528,25 +573,15 @@ for city_name in selected_cities:
     blended_mean = blend
     blended_shift = 0.0
     if gefs_mean is not None:
-        # Dynamic blending: more GEFS late in day
-        gefs_weight = 0.3
-        if now_hour > 15:
-            gefs_weight = 0.4
-        if city_name in COASTAL_CITIES:
-            gefs_weight *= 0.67  # lower weight for coastal cities
-        blended_mean = (1 - gefs_weight) * blend + gefs_weight * gefs_mean
+        blended_mean = 0.7 * blend + 0.3 * gefs_mean
         blended_shift = blended_mean - blend
         shift_note = f"+{blended_shift:.1f}°F" if blended_shift > 0 else f"{blended_shift:.1f}°F"
-        st.info(f"Blended mean: {blended_mean:.1f}°F ({shift_note} from original — dynamic weight {gefs_weight:.0%} GEFS)")
+        st.info(f"Blended mean: {blended_mean:.1f}°F ({shift_note} from original — 70% your model + 30% GEFS)")
     gefs_text = "N/A"
     if gefs_probs:
         sorted_probs = sorted(gefs_probs.items(), key=lambda x: x[1], reverse=True)[:5]
         gefs_text = "<br>".join([f"{bin_range}°F: {prob:.0f}%" for bin_range, prob in sorted_probs])
     gefs_summary.append({"City": city_name, "GEFS Top Probs": gefs_text, "Members": num_members})
-
-    # Divergence warning
-    if obs_high_f is not None and gefs_mean is not None and abs(obs_high_f - gefs_mean) > 5:
-        st.warning(f"Divergence Alert: Observed {obs_high_f}°F is {abs(obs_high_f - gefs_mean):.1f}°F from GEFS mean — local effects likely dominating.")
 
     diff_nws = abs(blend - nws_high) if nws_high else None
     status = "GREEN" if spread <= 3.0 and (diff_nws or 999) <= 1.5 else \
@@ -575,9 +610,7 @@ for city_name in selected_cities:
         "Confidence": prob_in_band,
         "Bin Hit": bin_hit,
         "Spread": round(spread, 1),
-        "NWS Diff": round(diff_nws, 1) if diff_nws is not None else "N/A",
-        "Adjusted Prediction": round(blended_mean, 1),
-        "GEFS Mean": round(gefs_mean, 1) if gefs_mean else "N/A"
+        "NWS Diff": round(diff_nws, 1) if diff_nws is not None else "N/A"
     }
     log_rows.append(log_row)
 
@@ -659,8 +692,6 @@ if gefs_summary:
 # NEW: GEFS Status & Current Adjusted Bin Prediction
 st.markdown("### GEFS Status & Current Adjusted Bin Prediction")
 st.write(f"**Last GEFS Run Time**: {last_gefs_run}")
-if stale:
-    st.warning(f"GEFS data may be stale ({age:.0f} hours old) — consider refreshing later for new run.")
 
 for city_name in selected_cities:
     if city_name not in city_data:
@@ -678,7 +709,7 @@ for city_name in selected_cities:
         st.write(f"{city_name}: No GEFS data available")
         continue
 
-    # Bias correction
+    # Simple bias correction: shift all GEFS bins toward your blend + current obs
     bias = 0
     if obs_high_f is not None and gefs_mean is not None:
         bias += 0.4 * (obs_high_f - gefs_mean)
@@ -694,9 +725,11 @@ for city_name in selected_cities:
         new_bin = f"{new_low}-{new_high}"
         adjusted_probs[new_bin] = adjusted_probs.get(new_bin, 0) + prob
 
+    # Sort and get top bins
     sorted_adjusted = sorted(adjusted_probs.items(), key=lambda x: x[1], reverse=True)[:5]
     top_text = "<br>".join([f"{bin_range}°F: {prob:.0f}%" for bin_range, prob in sorted_adjusted])
 
+    # Most likely range (cover ~60–70% probability)
     cumulative = 0
     range_low = None
     range_high = None
