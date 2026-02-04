@@ -23,12 +23,15 @@ except ImportError:
 
 from dataclasses import dataclass
 
-# ==================== LOGIN ====================
+# ==================== LOGIN (PERSISTENT ACROSS REFRESHES) ====================
+# Changed to your requested credentials
 CORRECT_USERNAME = "admin"
 CORRECT_PASSWORD = "snc2006"
 
+# Generate a short token (hash of username + password)
 LOGIN_TOKEN = sha256((CORRECT_USERNAME + CORRECT_PASSWORD).encode()).hexdigest()[:16]
 
+# Check if already logged in via token in query params
 if 'token' in st.query_params and st.query_params['token'][0] == LOGIN_TOKEN:
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = True
@@ -46,12 +49,13 @@ if not st.session_state.logged_in:
         if submit:
             if username == CORRECT_USERNAME and password == CORRECT_PASSWORD:
                 st.session_state.logged_in = True
+                # Add token to query params so refresh keeps you logged in
                 st.query_params["token"] = LOGIN_TOKEN
-                st.success("Logged in! Refreshing...")
+                st.success("Logged in successfully! Refreshing...")
                 st.rerun()
             else:
-                st.error("Incorrect credentials.")
-    st.stop()
+                st.error("Incorrect username or password. Try again.")
+    st.stop()  # Stop script until logged in
 
 # ==================== DASHBOARD ====================
 st.set_page_config(page_title="Wethr Helper", layout="wide")
@@ -65,7 +69,7 @@ FORECASTS_URL = "https://wethr.net/api/v2/forecasts.php"
 NWS_URL = "https://wethr.net/api/v2/nws_forecasts.php"
 TARGET_MODELS = ["HRRR", "NAM", "NBM", "ECMWF-IFS"]
 MODEL_WEIGHTS_BASE = {'HRRR': 0.35, 'NAM': 0.25, 'NBM': 0.25, 'ECMWF-IFS': 0.15}
-LOG_FILE = "prediction_log.csv"
+LOG_FILE = "prediction_log.csv"  # Saved in repo
 
 @dataclass
 class CityConfig:
@@ -253,7 +257,7 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
                 else:
                     closest_key = min(bin_dict, key=lambda k: abs((int(k.split('-')[0]) + int(k.split('-')[1])) / 2 - blend))
                     closest = bin_dict[closest_key]
-                    diff = abs((int(closest_key.split('-')[0]) + int(closest_key.split('-')[1])) / 2 - blend)
+                    diff = abs((int(closest_key.split('-')[0]) + int(k.split('-')[1])) / 2 - blend)
                     snapshot += f"→ Closest: {closest_key} at {closest['yes_prob']:.0%} (Δ {diff:.1f}°F)\n"
             if safe_play_str != "--" and "below" in safe_play_str.lower():
                 try:
@@ -310,7 +314,6 @@ def make_time_note(city: CityConfig, obs, band):
     obs_high = obs.get("wethr_high")
     time_high_utc = obs.get("time_of_high_utc")
     dt_high_utc = None
-
     if time_high_utc:
         try:
             if time_high_utc.endswith("Z"):
