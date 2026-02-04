@@ -317,7 +317,7 @@ def make_time_note(city: CityConfig, obs, band):
                 time_high_utc = time_high_utc.replace("Z", "+00:00")
             dt_high_utc = datetime.fromisoformat(time_high_utc)
         except:
-            dt_high_utc = None  # Invalid time → ignore
+            dt_high_utc = None
 
     if obs_high is None:
         return "Observed high missing — check back later."
