@@ -310,7 +310,6 @@ def make_time_note(city: CityConfig, obs, band):
     obs_high = obs.get("wethr_high")
     time_high_utc = obs.get("time_of_high_utc")
     dt_high_utc = None
-
     if time_high_utc:
         try:
             if time_high_utc.endswith("Z"):
