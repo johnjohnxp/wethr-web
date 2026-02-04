@@ -24,14 +24,11 @@ except ImportError:
 from dataclasses import dataclass
 
 # ==================== LOGIN (PERSISTENT ACROSS REFRESHES) ====================
-# Change these to your own credentials!
-CORRECT_USERNAME = "admin"               # ← Your username
-CORRECT_PASSWORD = "snc2006"   # ← Your strong password
+CORRECT_USERNAME = "admin"
+CORRECT_PASSWORD = "snc2006"
 
-# Generate a short token (hash of username + password)
 LOGIN_TOKEN = sha256((CORRECT_USERNAME + CORRECT_PASSWORD).encode()).hexdigest()[:16]
 
-# Check if already logged in via token in query params
 if 'token' in st.query_params and st.query_params['token'][0] == LOGIN_TOKEN:
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = True
@@ -49,13 +46,12 @@ if not st.session_state.logged_in:
         if submit:
             if username == CORRECT_USERNAME and password == CORRECT_PASSWORD:
                 st.session_state.logged_in = True
-                # Add token to query params so refresh keeps you logged in
                 st.query_params["token"] = LOGIN_TOKEN
                 st.success("Logged in successfully! Refreshing...")
                 st.rerun()
             else:
                 st.error("Incorrect username or password. Try again.")
-    st.stop()  # Stop script until logged in
+    st.stop()
 
 # ==================== DASHBOARD ====================
 st.set_page_config(page_title="Wethr Helper", layout="wide")
@@ -69,7 +65,7 @@ FORECASTS_URL = "https://wethr.net/api/v2/forecasts.php"
 NWS_URL = "https://wethr.net/api/v2/nws_forecasts.php"
 TARGET_MODELS = ["HRRR", "NAM", "NBM", "ECMWF-IFS"]
 MODEL_WEIGHTS_BASE = {'HRRR': 0.35, 'NAM': 0.25, 'NBM': 0.25, 'ECMWF-IFS': 0.15}
-LOG_FILE = "prediction_log.csv"  # Saved in repo
+LOG_FILE = "prediction_log.csv"
 
 @dataclass
 class CityConfig:
@@ -495,7 +491,7 @@ for city_name in selected_cities:
     bin_hit = "Yes" if band[0] <= float(actual_high) <= band[1] else "No" if actual_high != "Unknown" else "N/A"
     log_row = {
         "Date": datetime.now().strftime("%Y-%m-%d"),
-        "Time": datetime.now().strftime("%H:%M:S"),
+        "Time": datetime.now().strftime("%H:%M:%S"),
         "City": city_name,
         "Original Blend": round(blend, 1),
         "Blended Model": round(blended_mean, 1),
@@ -543,8 +539,8 @@ for city_name in selected_cities:
         # Extra details
         st.markdown("**Model Highs**")
         model_df = pd.DataFrame([
-            {"Model": m, "High": f"{model_highs.get(m, 'N/A'):.1f}°F" if model_highs.get(m) else "N/A"
-for m in TARGET_MODELS
+            {"Model": m, "High": f"{model_highs.get(m, 'N/A'):.1f}°F" if model_highs.get(m) else "N/A"}
+            for m in TARGET_MODELS
         ])
         st.table(model_df)
 
@@ -591,20 +587,28 @@ if gefs_summary:
 
 # Auto-log predictions to CSV (appends new rows each run)
 if log_rows:
-    file_exists = os.path.exists(LOG_FILE)
-    with open(LOG_FILE, 'a', newline='') as f:
+    file_exists = os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0
+
+    with open(LOG_FILE, 'a', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=log_rows[0].keys())
+
+        # Write header only if file is new or empty
         if not file_exists:
             writer.writeheader()
+
         writer.writerows(log_rows)
 
-    # Show download button for log file
+    # Show confirmation (can remove later)
+    st.success(f"Logged {len(log_rows)} cities to prediction_log.csv")
+
+    # Show download button
     with open(LOG_FILE, 'rb') as f:
         st.download_button(
-            label="Download Prediction Log (CSV)",
+            label="Download Full Prediction Log (CSV)",
             data=f,
             file_name="prediction_log.csv",
-            mime="text/csv"
+            mime="text/csv",
+            key="download_log"
         )
 
 st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (refreshes on page load)")
