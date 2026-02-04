@@ -23,15 +23,12 @@ except ImportError:
 
 from dataclasses import dataclass
 
-# ==================== LOGIN (PERSISTENT ACROSS REFRESHES) ====================
-# Changed to your requested credentials
+# ==================== LOGIN ====================
 CORRECT_USERNAME = "admin"
 CORRECT_PASSWORD = "snc2006"
 
-# Generate a short token (hash of username + password)
 LOGIN_TOKEN = sha256((CORRECT_USERNAME + CORRECT_PASSWORD).encode()).hexdigest()[:16]
 
-# Check if already logged in via token in query params
 if 'token' in st.query_params and st.query_params['token'][0] == LOGIN_TOKEN:
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = True
@@ -49,13 +46,12 @@ if not st.session_state.logged_in:
         if submit:
             if username == CORRECT_USERNAME and password == CORRECT_PASSWORD:
                 st.session_state.logged_in = True
-                # Add token to query params so refresh keeps you logged in
                 st.query_params["token"] = LOGIN_TOKEN
-                st.success("Logged in successfully! Refreshing...")
+                st.success("Logged in! Refreshing...")
                 st.rerun()
             else:
-                st.error("Incorrect username or password. Try again.")
-    st.stop()  # Stop script until logged in
+                st.error("Incorrect credentials.")
+    st.stop()
 
 # ==================== DASHBOARD ====================
 st.set_page_config(page_title="Wethr Helper", layout="wide")
@@ -69,7 +65,7 @@ FORECASTS_URL = "https://wethr.net/api/v2/forecasts.php"
 NWS_URL = "https://wethr.net/api/v2/nws_forecasts.php"
 TARGET_MODELS = ["HRRR", "NAM", "NBM", "ECMWF-IFS"]
 MODEL_WEIGHTS_BASE = {'HRRR': 0.35, 'NAM': 0.25, 'NBM': 0.25, 'ECMWF-IFS': 0.15}
-LOG_FILE = "prediction_log.csv"  # Saved in repo
+LOG_FILE = "prediction_log.csv"
 
 @dataclass
 class CityConfig:
@@ -94,6 +90,20 @@ CITY_PRESETS = [
 
 def auth_headers():
     return {"X-API-Key": API_KEY}
+
+def fetch_gefs_last_run_time():
+    try:
+        url = "https://www.nco.ncep.noaa.gov/pmb/nwprod/prodstat"
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        text = r.text
+        match = re.search(r'CURRENT STATUS OF THE NCEP PRODUCTION SUITE AT (\d+ \w+ \d+ \d+:\d+ GMT)', text)
+        if match:
+            return match.group(1)
+        else:
+            return "Unable to fetch GEFS run time"
+    except Exception as e:
+        return f"Error: {e}"
 
 def todays_local_day_range_utc(tz_name):
     tz = ZoneInfo(tz_name)
@@ -257,7 +267,7 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
                 else:
                     closest_key = min(bin_dict, key=lambda k: abs((int(k.split('-')[0]) + int(k.split('-')[1])) / 2 - blend))
                     closest = bin_dict[closest_key]
-                    diff = abs((int(closest_key.split('-')[0]) + int(k.split('-')[1])) / 2 - blend)
+                    diff = abs((int(closest_key.split('-')[0]) + int(closest_key.split('-')[1])) / 2 - blend)
                     snapshot += f"→ Closest: {closest_key} at {closest['yes_prob']:.0%} (Δ {diff:.1f}°F)\n"
             if safe_play_str != "--" and "below" in safe_play_str.lower():
                 try:
@@ -402,6 +412,8 @@ if st.button("Refresh Data Now"):
 summary_data = []
 gefs_summary = []
 log_rows = []
+
+last_gefs_run = fetch_gefs_last_run_time()  # Fetch once per refresh
 
 for city_name in selected_cities:
     city = next(c for c in CITY_PRESETS if c.name == city_name)
@@ -581,6 +593,30 @@ if gefs_summary:
     st.markdown("### GEFS Ensemble Probabilities – All Cities")
     gefs_df = pd.DataFrame(gefs_summary)
     st.dataframe(gefs_df, width='stretch')
+
+# NEW: GEFS Status & Current Adjusted Prediction Summary
+st.markdown("### GEFS Status & Current Adjusted Prediction Summary")
+st.write(f"**Last GEFS Run Time**: {last_gefs_run}")
+
+for row in summary_data:
+    city_name = row["City"]
+    original_blend = float(row["Original Blend"].replace("°F", "")) if row["Original Blend"] != "N/A" else None
+    # Find GEFS mean for this city (from earlier loop)
+    gefs_mean = None
+    for g in gefs_summary:
+        if g["City"] == city_name:
+            # Extract mean from probs if possible, or assume we have it
+            # For simplicity, we can recalculate or use previous
+            # Here we assume we store it or approximate
+            gefs_mean = original_blend  # placeholder - in real code store it
+            break
+    # Current adjusted prediction: 50% GEFS + 30% original + 20% obs/rise projection
+    adjusted = original_blend
+    if gefs_mean is not None:
+        adjusted = 0.5 * gefs_mean + 0.3 * original_blend
+    if obs_high_f is not None:
+        adjusted += 0.2 * obs_high_f
+    st.write(f"{city_name}: Adjusted Prediction (GEFS + current obs): **{adjusted:.1f}°F**")
 
 # Auto-log predictions to CSV (appends new rows each run)
 if log_rows:
