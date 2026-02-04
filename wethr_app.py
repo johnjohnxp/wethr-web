@@ -11,30 +11,38 @@ import pandas as pd
 import warnings
 import csv
 from hashlib import sha256
+
 warnings.filterwarnings("ignore", category=Warning)
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
     class ZoneInfo:
         def __init__(self, name):
             self.name = name
+
 from dataclasses import dataclass
+
 # ==================== LOGIN ====================
 CORRECT_USERNAME = "admin"
 CORRECT_PASSWORD = "snc2006"
+
 LOGIN_TOKEN = sha256((CORRECT_USERNAME + CORRECT_PASSWORD).encode()).hexdigest()[:16]
+
 if 'token' in st.query_params and st.query_params['token'][0] == LOGIN_TOKEN:
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = True
 else:
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
+
 if not st.session_state.logged_in:
     st.title("Login to Wethr Helper")
     with st.form(key="login_form"):
         username = st.text_input("Username", placeholder="Enter username")
         password = st.text_input("Password", type="password", placeholder="Enter password")
         submit = st.form_submit_button("Login")
+
         if submit:
             if username == CORRECT_USERNAME and password == CORRECT_PASSWORD:
                 st.session_state.logged_in = True
@@ -44,10 +52,12 @@ if not st.session_state.logged_in:
             else:
                 st.error("Incorrect credentials.")
     st.stop()
+
 # ==================== DASHBOARD ====================
 st.set_page_config(page_title="Wethr Helper", layout="wide")
 st.title("Wethr Helper Dashboard")
 st.caption("Latest weather blends, NWS backup, and Kalshi markets. All cities shown automatically. GREEN expand on load. Refreshes on page load or button press.")
+
 # CONFIG
 API_KEY = "570b45680d41097ee46550e36f7c1290754081becee8955529b0d197cf9d8efd"
 OBS_URL = "https://wethr.net/api/v2/observations.php"
@@ -56,6 +66,7 @@ NWS_URL = "https://wethr.net/api/v2/nws_forecasts.php"
 TARGET_MODELS = ["HRRR", "NAM", "NBM", "ECMWF-IFS"]
 MODEL_WEIGHTS_BASE = {'HRRR': 0.35, 'NAM': 0.25, 'NBM': 0.25, 'ECMWF-IFS': 0.15}
 LOG_FILE = "prediction_log.csv"
+
 @dataclass
 class CityConfig:
     name: str
@@ -64,6 +75,7 @@ class CityConfig:
     timezone: str
     gridpoint: str
     lat_lon: str
+
 CITY_PRESETS = [
     CityConfig("Seattle", "KSEA", "KSEA", "America/Los_Angeles", "SEW/125,131", "47.6062,-122.3321"),
     CityConfig("San Francisco", "KSFO", "KSFO", "America/Los_Angeles", "MTR/94,70", "37.7749,-122.4194"),
@@ -75,8 +87,10 @@ CITY_PRESETS = [
     CityConfig("Chicago", "KORD", "KORD", "America/Chicago", "LOT/41,74", "41.8781,-87.6298"),
     CityConfig("Boston", "KBOS", "KBOS", "America/New_York", "BOX/90,71", "42.3601,-71.0589"),
 ]
+
 def auth_headers():
     return {"X-API-Key": API_KEY}
+
 def todays_local_day_range_utc(tz_name):
     tz = ZoneInfo(tz_name)
     now_local = datetime.now(tz)
@@ -85,6 +99,7 @@ def todays_local_day_range_utc(tz_name):
     start_utc = start_local.astimezone(timezone.utc).replace(microsecond=0)
     end_utc = end_local.astimezone(timezone.utc).replace(microsecond=0)
     return start_utc.isoformat().replace("+00:00", "Z"), end_utc.isoformat().replace("+00:00", "Z")
+
 def fetch_data(url, params, retries=3):
     for attempt in range(retries):
         try:
@@ -96,12 +111,15 @@ def fetch_data(url, params, retries=3):
             time.sleep(2)
     st.error(f"Failed {url} after {retries} attempts.")
     return {}
+
 def fetch_observed_high(city):
     params = {"station_code": city.station_code, "mode": "wethr_high", "logic": "nws"}
     return fetch_data(OBS_URL, params)
+
 def fetch_nws_high(city):
     params = {"station_code": city.station_code, "mode": "latest"}
     return fetch_data(NWS_URL, params)
+
 def fetch_model_forecasts(city):
     start_iso, end_iso = todays_local_day_range_utc(city.timezone)
     params = {
@@ -144,6 +162,7 @@ def fetch_model_forecasts(city):
             model_highs[model] = temp
     highs = {m: v for m, v in model_highs.items() if v is not None}
     return highs, model_hourly, model_dew, model_wind, model_cloud
+
 def fetch_nws_gridpoint(city):
     try:
         point_url = f"https://api.weather.gov/points/{city.lat_lon}"
@@ -164,6 +183,7 @@ def fetch_nws_gridpoint(city):
     except Exception as e:
         st.warning(f"NWS gridpoint error: {e}")
         return None
+
 def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, exact_grade):
     KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
     series_ticker_map = {
@@ -180,6 +200,7 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
     series_ticker = series_ticker_map.get(city_name)
     if not series_ticker:
         return f"No ticker for {city_name}."
+
     try:
         url = f"{KALSHI_BASE}/markets?series_ticker={series_ticker}&status=open&limit=50"
         r = requests.get(url, timeout=10)
@@ -187,6 +208,7 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
         markets = r.json().get("markets", [])
         if not markets:
             return f"No open markets for {series_ticker}."
+
         bin_dict = {}
         implied_high = None
         for m in markets:
@@ -219,7 +241,7 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
         for bin_key, b in bin_data:
             prob = f"{b['yes_prob']:.0%}" if b['yes_prob'] > 0 else "N/A"
             ba = f"bid {b['bid']:.2f}–ask {b['ask']:.2f}" if b['bid'] or b['ask'] else ""
-            snapshot += f" {bin_key}°F: Yes {prob} {ba} (vol {b['volume']})\n"
+            snapshot += f"  {bin_key}°F: Yes {prob} {ba} (vol {b['volume']})\n"
         snapshot += f"\nMarket-implied high: ~{implied_high:.1f}°F\n"
         if status != "RED" and blend is not None:
             snapshot += f"→ Your blend: {blend:.1f}°F\n"
@@ -244,6 +266,7 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
         return snapshot
     except Exception as e:
         return f"Kalshi error: {str(e)}"
+
 def fetch_gefs_probs(lat, lon):
     try:
         url = (
@@ -261,67 +284,79 @@ def fetch_gefs_probs(lat, lon):
         if not hourly_temps or len(hourly_temps) < 10:
             st.warning("GEFS returned empty or incomplete data")
             return {}, 0, None
+
         daily_maxes = []
-        step = max(1, len(hourly_temps) // 30) # Prevent zero step
+        step = max(1, len(hourly_temps) // 30)  # Prevent zero step
         for i in range(0, len(hourly_temps), step):
-            member_temps = hourly_temps[i:i+48] # Approx 48 hours
+            member_temps = hourly_temps[i:i+48]  # Approx 48 hours
             if member_temps:
                 daily_maxes.append(max(member_temps))
+
         if not daily_maxes:
             return {}, 0, None
+
         bin_counts = Counter(round(max_temp) for max_temp in daily_maxes)
         total = len(daily_maxes)
         probs = {f"{k}-{k+1}": (count / total * 100) for k, count in sorted(bin_counts.items())}
-        gefs_mean = sum(daily_maxes) / total # GEFS average high
+        gefs_mean = sum(daily_maxes) / total  # GEFS average high
         return probs, total, gefs_mean
     except Exception as e:
         st.warning(f"GFS ensemble error: {e}")
         return {}, 0, None
+
 def make_time_note(city: CityConfig, obs, band):
     tz = ZoneInfo(city.timezone)
     now_local = datetime.now(tz)
     obs_high = obs.get("wethr_high")
     time_high_utc = obs.get("time_of_high_utc")
     dt_high_utc = None
+
     if time_high_utc:
         try:
             if time_high_utc.endswith("Z"):
                 time_high_utc = time_high_utc.replace("Z", "+00:00")
             dt_high_utc = datetime.fromisoformat(time_high_utc)
         except:
-            pass
+            dt_high_utc = None  # Invalid time → ignore
+
     if obs_high is None:
-        return "Observed high missing."
+        return "Observed high missing — check back later."
+
     try:
         obs_high_f = float(obs_high)
     except:
         return "Observed high not numeric."
-    if band is None:
-        return "Local time is late afternoon or later; today's high may already be set." if now_local.hour >= 16 else "Plenty of time left in the day for temps to move."
-    low_band, high_band = band
+
+    # Early day override (before 11 AM) — always upside potential
+    if now_local.hour <= 11:
+        if obs_high_f < (band[0] if band else 50) - 3:
+            return "Early in the day and obs are still well below the suggested band; plenty of runway left."
+        else:
+            return "Early in the day; temps are starting to rise, but plenty of time left for the high."
+
+    # Midday (11 AM – 4 PM)
+    if 11 <= now_local.hour < 16:
+        if obs_high_f < (band[0] if band else 50):
+            return "Midday and obs are still below the suggested band; upside potential remains."
+        elif band and band[0] <= obs_high_f <= band[1]:
+            return "Midday and obs sit inside the suggested band; careful sizing / management warranted."
+        else:
+            return "Midday and obs have exceeded the suggested band; watch for overachievement risk."
+
+    # Late day (after 4 PM) — check if high is already set
     if dt_high_utc is not None:
         dt_high_local = dt_high_utc.astimezone(tz)
         hours_since_high = (now_local - dt_high_local).total_seconds() / 3600.0
         if hours_since_high >= 3:
             return "Observed high occurred several hours ago; today's high is likely already set."
-    if now_local.hour <= 11:
-        if obs_high_f < low_band - 3:
-            return "Early in the day and obs are still well below the suggested band; plenty of runway left."
-        else:
-            return "Early in the day; temps are already approaching the suggested band."
-    if 11 < now_local.hour < 16:
-        if obs_high_f < low_band:
-            return "Midday and obs are still below the suggested band; upside potential remains."
-        elif low_band <= obs_high_f <= high_band:
-            return "Midday and obs sit inside the suggested band; careful sizing / management warranted."
-        else:
-            return "Midday and obs have already exceeded the suggested band; watch for overachievement risk."
-    if obs_high_f >= high_band:
-        return "Late in the day and obs are at/above the suggested band; high is likely already in."
-    elif obs_high_f < low_band:
+    
+    if band and obs_high_f >= band[1]:
+        return "Late in the day and obs are at/above the suggested band; high is likely in."
+    elif band and obs_high_f < band[0]:
         return "Late in the day and obs never reached the suggested band; underperformance vs guidance."
     else:
         return "Late in the day and obs are inside the suggested band; high is likely close to final."
+
 # ============= STREAMLIT APP =============
 col_refresh1, col_refresh2 = st.columns([3, 1])
 with col_refresh1:
@@ -332,11 +367,13 @@ with col_refresh1:
         label_visibility="collapsed",
         key="refresh_select"
     )
+
 if refresh_interval != "Off":
     interval_map = {"5 min": 300, "10 min": 600, "15 min": 900, "30 min": 1800}
     interval_seconds = interval_map[refresh_interval]
     countdown_placeholder = st.empty()
     countdown_placeholder.markdown(f"Next refresh in...")
+
     countdown_js = f"""
     <script>
     const seconds = {interval_seconds};
@@ -353,14 +390,19 @@ if refresh_interval != "Off":
     <div id="countdown"></div>
     """
     countdown_placeholder.markdown(countdown_js, unsafe_allow_html=True)
+
 selected_cities = [c.name for c in CITY_PRESETS]
+
 if st.button("Refresh Data Now"):
     st.rerun()
+
 summary_data = []
 gefs_summary = []
 log_rows = []
+
 for city_name in selected_cities:
     city = next(c for c in CITY_PRESETS if c.name == city_name)
+
     obs = fetch_observed_high(city)
     nws = fetch_nws_high(city)
     model_highs, model_hourly, model_dew, model_wind, model_cloud = fetch_model_forecasts(city)
@@ -368,10 +410,12 @@ for city_name in selected_cities:
     nws_grid = fetch_nws_gridpoint(city)
     obs_high = obs.get("wethr_high") if obs else None
     obs_high_f = float(obs_high) if obs_high else None
+
     if len(model_highs) < 3:
         summary_data.append({"City": city_name, "Original Blend": "N/A", "Blended Model": "N/A", "Spread": "N/A", "Status": "ERROR", "Band": "N/A", "Confidence": "N/A", "Observed": "N/A", "Kalshi": "N/A"})
         gefs_summary.append({"City": city_name, "GEFS Top Probs": "N/A", "Members": 0})
         continue
+
     vals = list(model_highs.values())
     weights = MODEL_WEIGHTS_BASE.copy()
     now_hour = datetime.now(ZoneInfo(city.timezone)).hour
@@ -383,8 +427,10 @@ for city_name in selected_cities:
     blend = sum(weights.get(m, 0) * model_highs.get(m, 0) for m in TARGET_MODELS)
     spread = max(vals) - min(vals)
     std = stdev(vals) if len(vals) > 1 else 0
+
     if nws_grid:
         blend = 0.7 * blend + 0.3 * nws_grid
+
     rise_rate = 0
     if 'HRRR' in model_hourly and len(model_hourly['HRRR']) >= 3:
         recent = sorted(model_hourly['HRRR'][-3:], key=lambda x: x[0])
@@ -395,6 +441,7 @@ for city_name in selected_cities:
         adjustment = min(1.0, rise_rate * 0.3)
         blend += adjustment
         st.info(f"Rise rate {rise_rate:.1f}°F/hr — blend adjusted +{adjustment:.1f}°F")
+
     dew_bias = wind_bias = cloud_bias = 0
     for m in TARGET_MODELS:
         if model_dew.get(m) and len(model_dew[m]) > 0:
@@ -410,6 +457,7 @@ for city_name in selected_cities:
     blend += dew_bias + wind_bias + cloud_bias
     if dew_bias or wind_bias or cloud_bias:
         st.info(f"Biases applied: Dew {dew_bias:.1f}°F, Wind {wind_bias:.1f}°F, Cloud {cloud_bias:.1f}°F")
+
     lat, lon = city.lat_lon.split(',')
     gefs_probs, num_members, gefs_mean = fetch_gefs_probs(lat, lon)
     blended_mean = blend
@@ -424,13 +472,17 @@ for city_name in selected_cities:
         sorted_probs = sorted(gefs_probs.items(), key=lambda x: x[1], reverse=True)[:5]
         gefs_text = "<br>".join([f"{bin_range}°F: {prob:.0f}%" for bin_range, prob in sorted_probs])
     gefs_summary.append({"City": city_name, "GEFS Top Probs": gefs_text, "Members": num_members})
+
     diff_nws = abs(blend - nws_high) if nws_high else None
     status = "GREEN" if spread <= 3.0 and (diff_nws or 999) <= 1.5 else \
              "YELLOW" if spread <= 4.0 and (diff_nws or 999) <= 2.0 else "RED"
+
     center = round(blended_mean)
     band = (center - 1, center + 1)
     prob_in_band = 68 if std < 1.5 else 50 if std < 2.5 else 30
+
     kalshi_snapshot = fetch_kalshi_market(city_name, blended_mean, status, "TODO exact", "TODO safe", "TODO grade")
+
     actual_high = obs_high_f if obs_high_f else "Unknown"
     error_original = blend - float(actual_high) if actual_high != "Unknown" else "N/A"
     error_blended = blended_mean - float(actual_high) if actual_high != "Unknown" else "N/A"
@@ -451,6 +503,7 @@ for city_name in selected_cities:
         "NWS Diff": round(diff_nws, 1) if diff_nws is not None else "N/A"
     }
     log_rows.append(log_row)
+
     summary_data.append({
         "City": city_name,
         "Original Blend": f"{blend:.1f}°F",
@@ -462,12 +515,14 @@ for city_name in selected_cities:
         "Observed": f"{obs_high_f or 'N/A'}°F",
         "Kalshi": kalshi_snapshot[:200] + "..." if kalshi_snapshot else "N/A"
     })
+
     with st.expander(f"📍 {city.name} - Detailed Report", expanded=(status == "GREEN")):
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Original Blend", f"{blend:.1f}°F")
         col2.metric("Blended Model", f"{blended_mean:.1f}°F")
         col3.metric("Spread", f"{spread:.1f}°F")
         col4.metric("Observed", f"{obs_high_f or 'N/A'}°F")
+
         st.markdown(f"**Status:** {status}")
         if status == "GREEN":
             st.success("✅ GREEN — models + NWS tightly aligned.")
@@ -475,25 +530,32 @@ for city_name in selected_cities:
             st.warning("🟡 YELLOW — usable but not ideal.")
         else:
             st.error("🔴 RED — noisy setup.")
+
         st.markdown("**Model Highs**")
         model_df = pd.DataFrame([
             {"Model": m, "High": f"{model_highs.get(m, 'N/A'):.1f}°F" if model_highs.get(m) else "N/A"}
             for m in TARGET_MODELS
         ])
         st.table(model_df)
+
         st.markdown("**Suggested Range**")
         st.markdown(f"Comfort band: **{band[0]}–{band[1]}°F**")
+
         st.markdown("**Bin Lean Guide**")
         st.markdown("- Primary: LEAN YES")
         st.markdown("- Secondary: SMALL YES / avoid NO")
+
         st.markdown("**Exact & Safe**")
         st.markdown(f"Exact: **{center}–{center+1}°F YES** (A/B grade)")
         st.markdown(f"Safe: **{center+4}°F or below YES** (B SAFE)")
+
         st.markdown("**Timing Note**")
         note = make_time_note(city, obs, band)
         st.markdown(note)
+
         st.markdown("**Full Kalshi Snapshot**")
         st.markdown(kalshi_snapshot)
+
 # Bottom summary box (best to worst)
 if summary_data:
     st.markdown("### All Cities Summary (Best → Worst)")
@@ -501,27 +563,34 @@ if summary_data:
     df['status_order'] = df['Status'].map({'GREEN': 0, 'YELLOW': 1, 'RED': 2})
     df = df.sort_values(['status_order', 'Spread'])
     df = df.drop(columns=['status_order'])
+
     def color_status(val):
         if val == 'GREEN': return 'background-color: #90EE90'
         elif val == 'YELLOW': return 'background-color: #FFFF99'
         elif val == 'RED': return 'background-color: #FF9999'
         return ''
+
     styled_df = df.style.applymap(color_status, subset=['Status'])
     st.dataframe(styled_df, width='stretch')
+
 # Consolidated GEFS summary table
 if gefs_summary:
     st.markdown("### GEFS Ensemble Probabilities – All Cities")
     gefs_df = pd.DataFrame(gefs_summary)
     st.dataframe(gefs_df, width='stretch')
+
 # Auto-log predictions to CSV (appends new rows each run)
 if log_rows:
     file_exists = os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0
+
     with open(LOG_FILE, 'a', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=log_rows[0].keys())
         if not file_exists:
             writer.writeheader()
         writer.writerows(log_rows)
+
     st.success(f"Logged {len(log_rows)} cities to prediction_log.csv")
+
     with open(LOG_FILE, 'rb') as f:
         st.download_button(
             label="Download Full Prediction Log (CSV)",
@@ -530,4 +599,5 @@ if log_rows:
             mime="text/csv",
             key="download_log"
         )
+
 st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (refreshes on page load)")
