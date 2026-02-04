@@ -72,7 +72,6 @@ NWS_URL = "https://wethr.net/api/v2/nws_forecasts.php"
 TARGET_MODELS = ["HRRR", "NAM", "NBM", "ECMWF-IFS"]
 MODEL_WEIGHTS_BASE = {'HRRR': 0.35, 'NAM': 0.25, 'NBM': 0.25, 'ECMWF-IFS': 0.15}
 LOG_FILE = "prediction_log.csv"
-EST_TZ = ZoneInfo("America/New_York")
 
 @dataclass
 class CityConfig:
@@ -97,33 +96,6 @@ CITY_PRESETS = [
 
 def auth_headers():
     return {"X-API-Key": API_KEY}
-
-def fetch_gefs_last_run_time():
-    try:
-        url = "https://www.nco.ncep.noaa.gov/pmb/nwprod/prodstat"
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        text = r.text
-        match = re.search(r'CURRENT STATUS OF THE NCEP PRODUCTION SUITE AT (\d+ \w+ \d+ \d+:\d+ GMT)', text)
-        if match:
-            return match.group(1)
-        else:
-            now = datetime.utcnow()
-            hours = (now.hour // 6) * 6
-            return now.replace(hour=hours, minute=0, second=0, microsecond=0).strftime("%d %b %Y %H:%M GMT (fallback)")
-    except Exception as e:
-        now = datetime.utcnow()
-        hours = (now.hour // 6) * 6
-        return now.replace(hour=hours, minute=0, second=0, microsecond=0).strftime("%d %b %Y %H:%M GMT (fallback)")
-
-def is_gefs_stale(last_run_str):
-    try:
-        dt_str = last_run_str.split(" (")[0]
-        dt = datetime.strptime(dt_str, "%d %b %Y %H:%M GMT")
-        age_hours = (datetime.utcnow() - dt).total_seconds() / 3600
-        return age_hours > 6, age_hours
-    except:
-        return True, 99
 
 def todays_local_day_range_utc(tz_name):
     tz = ZoneInfo(tz_name)
@@ -192,8 +164,8 @@ def fetch_model_forecasts(city):
         if dew is not None: model_dew[model].append((valid_time, dew))
         if wind is not None: model_wind[model].append((valid_time, wind))
         if cloud is not None: model_cloud[model].append((valid_time, cloud))
-        if model_highs[m] is None or temp > model_highs[m]:
-            model_highs[m] = temp
+        if model_highs[model] is None or temp > model_highs[model]:
+            model_highs[model] = temp
     highs = {m: v for m, v in model_highs.items() if v is not None}
     return highs, model_hourly, model_dew, model_wind, model_cloud
 
@@ -360,14 +332,12 @@ def make_time_note(city: CityConfig, obs, band):
     except:
         return "Observed high not numeric."
 
-    # Early day override (before 11 AM) — always upside potential
     if now_local.hour <= 11:
         if obs_high_f < (band[0] if band else 50) - 3:
             return "Early in the day and obs are still well below the suggested band; plenty of runway left."
         else:
             return "Early in the day; temps are starting to rise, but plenty of time left for the high."
 
-    # Midday (11 AM – 4 PM)
     if 11 <= now_local.hour < 16:
         if obs_high_f < (band[0] if band else 50):
             return "Midday and obs are still below the suggested band; upside potential remains."
@@ -376,13 +346,12 @@ def make_time_note(city: CityConfig, obs, band):
         else:
             return "Midday and obs have exceeded the suggested band; watch for overachievement risk."
 
-    # Late day (after 4 PM) — check if high is already set
     if dt_high_utc is not None:
         dt_high_local = dt_high_utc.astimezone(tz)
         hours_since_high = (now_local - dt_high_local).total_seconds() / 3600.0
         if hours_since_high >= 3:
             return "Observed high occurred several hours ago; today's high is likely already set."
-    
+
     if band and obs_high_f >= band[1]:
         return "Late in the day and obs are at/above the suggested band; high is likely in."
     elif band and obs_high_f < band[0]:
@@ -432,9 +401,6 @@ if st.button("Refresh Data Now"):
 summary_data = []
 gefs_summary = []
 log_rows = []
-
-# Fetch last run time once
-last_gefs_run = fetch_gefs_last_run_time()
 
 for city_name in selected_cities:
     city = next(c for c in CITY_PRESETS if c.name == city_name)
@@ -614,55 +580,6 @@ if gefs_summary:
     st.markdown("### GEFS Ensemble Probabilities – All Cities")
     gefs_df = pd.DataFrame(gefs_summary)
     st.dataframe(gefs_df, width='stretch')
-
-# NEW: GEFS Status & Current Adjusted Bin Prediction
-st.markdown("### GEFS Status & Current Adjusted Bin Prediction")
-st.write(f"**Last GEFS Run Time**: {last_gefs_run}")
-
-for city_name in selected_cities:
-    lat, lon = [c.lat_lon for c in CITY_PRESETS if c.name == city_name][0].split(',')
-    gefs_probs, _, gefs_mean = fetch_gefs_probs(float(lat), float(lon))
-
-    if not gefs_probs:
-        st.write(f"{city_name}: No GEFS data available")
-        continue
-
-    # Bias correction using current obs and rise rate
-    bias = 0
-    if obs_high_f is not None and gefs_mean is not None:
-        bias += 0.4 * (obs_high_f - gefs_mean)
-    if rise_rate > 0:
-        bias += 0.2 * rise_rate * 1.5
-    bias = min(max(bias, -3), 3)
-
-    adjusted_probs = {}
-    for bin_range, prob in gefs_probs.items():
-        low, high = map(int, bin_range.split('-'))
-        new_low = round(low + bias)
-        new_high = round(high + bias)
-        new_bin = f"{new_low}-{new_high}"
-        adjusted_probs[new_bin] = adjusted_probs.get(new_bin, 0) + prob
-
-    sorted_adjusted = sorted(adjusted_probs.items(), key=lambda x: x[1], reverse=True)[:5]
-    top_text = "<br>".join([f"{bin_range}°F: {prob:.0f}%" for bin_range, prob in sorted_adjusted])
-
-    cumulative = 0
-    range_low = None
-    range_high = None
-    for bin_range, prob in sorted_adjusted:
-        low, high = map(int, bin_range.split('-'))
-        if range_low is None:
-            range_low = low
-        range_high = high
-        cumulative += prob
-        if cumulative >= 65:
-            break
-    likely_range = f"{range_low}–{range_high}°F ({cumulative:.0f}% prob)"
-
-    st.markdown(f"**{city_name}**")
-    st.markdown(f"**Likely Range**: {likely_range}")
-    st.markdown(f"**Top Adjusted Bins**:<br>{top_text}")
-    st.markdown("---")
 
 # Auto-log predictions to CSV (appends new rows each run)
 if log_rows:
