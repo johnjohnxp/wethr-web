@@ -11,7 +11,6 @@ import pandas as pd
 import warnings
 import csv
 from hashlib import sha256
-from dataclasses import dataclass
 
 warnings.filterwarnings("ignore", category=Warning)
 
@@ -21,6 +20,8 @@ except ImportError:
     class ZoneInfo:
         def __init__(self, name):
             self.name = name
+
+from dataclasses import dataclass
 
 # ==================== LOGIN ====================
 CORRECT_USERNAME = "admin"
@@ -71,8 +72,8 @@ NWS_URL = "https://wethr.net/api/v2/nws_forecasts.php"
 TARGET_MODELS = ["HRRR", "NAM", "NBM", "ECMWF-IFS"]
 MODEL_WEIGHTS_BASE = {'HRRR': 0.35, 'NAM': 0.25, 'NBM': 0.25, 'ECMWF-IFS': 0.15}
 LOG_FILE = "prediction_log.csv"
+EST_TZ = ZoneInfo("America/New_York")
 
-# Define CityConfig BEFORE using it
 @dataclass
 class CityConfig:
     name: str
@@ -191,8 +192,8 @@ def fetch_model_forecasts(city):
         if dew is not None: model_dew[model].append((valid_time, dew))
         if wind is not None: model_wind[model].append((valid_time, wind))
         if cloud is not None: model_cloud[model].append((valid_time, cloud))
-        if model_highs[model] is None or temp > model_highs[model]:
-            model_highs[model] = temp
+        if model_highs[m] is None or temp > model_highs[m]:
+            model_highs[m] = temp
     highs = {m: v for m, v in model_highs.items() if v is not None}
     return highs, model_hourly, model_dew, model_wind, model_cloud
 
@@ -319,9 +320,9 @@ def fetch_gefs_probs(lat, lon):
             return {}, 0, None
 
         daily_maxes = []
-        step = max(1, len(hourly_temps) // 30)
+        step = max(1, len(hourly_temps) // 30)  # Prevent zero step
         for i in range(0, len(hourly_temps), step):
-            member_temps = hourly_temps[i:i+48]
+            member_temps = hourly_temps[i:i+48]  # Approx 48 hours
             if member_temps:
                 daily_maxes.append(max(member_temps))
 
@@ -331,7 +332,7 @@ def fetch_gefs_probs(lat, lon):
         bin_counts = Counter(round(max_temp) for max_temp in daily_maxes)
         total = len(daily_maxes)
         probs = {f"{k}-{k+1}": (count / total * 100) for k, count in sorted(bin_counts.items())}
-        gefs_mean = sum(daily_maxes) / total
+        gefs_mean = sum(daily_maxes) / total  # GEFS average high
         return probs, total, gefs_mean
     except Exception as e:
         st.warning(f"GFS ensemble error: {e}")
@@ -359,12 +360,14 @@ def make_time_note(city: CityConfig, obs, band):
     except:
         return "Observed high not numeric."
 
+    # Early day override (before 11 AM) — always upside potential
     if now_local.hour <= 11:
         if obs_high_f < (band[0] if band else 50) - 3:
             return "Early in the day and obs are still well below the suggested band; plenty of runway left."
         else:
             return "Early in the day; temps are starting to rise, but plenty of time left for the high."
 
+    # Midday (11 AM – 4 PM)
     if 11 <= now_local.hour < 16:
         if obs_high_f < (band[0] if band else 50):
             return "Midday and obs are still below the suggested band; upside potential remains."
@@ -373,12 +376,13 @@ def make_time_note(city: CityConfig, obs, band):
         else:
             return "Midday and obs have exceeded the suggested band; watch for overachievement risk."
 
+    # Late day (after 4 PM) — check if high is already set
     if dt_high_utc is not None:
         dt_high_local = dt_high_utc.astimezone(tz)
         hours_since_high = (now_local - dt_high_local).total_seconds() / 3600.0
         if hours_since_high >= 3:
             return "Observed high occurred several hours ago; today's high is likely already set."
-
+    
     if band and obs_high_f >= band[1]:
         return "Late in the day and obs are at/above the suggested band; high is likely in."
     elif band and obs_high_f < band[0]:
@@ -429,6 +433,7 @@ summary_data = []
 gefs_summary = []
 log_rows = []
 
+# Fetch last run time once
 last_gefs_run = fetch_gefs_last_run_time()
 
 for city_name in selected_cities:
