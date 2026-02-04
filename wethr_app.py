@@ -23,39 +23,67 @@ except ImportError:
 
 from dataclasses import dataclass
 
-# ==================== LOGIN (PERSISTENT ACROSS REFRESHES) ====================
-# Changed to your requested credentials
-CORRECT_USERNAME = "admin"
-CORRECT_PASSWORD = "snc2006"
+# ==================== LOGIN & SESSION ====================
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
 
-# Generate a short token (hash of username + password)
-LOGIN_TOKEN = sha256((CORRECT_USERNAME + CORRECT_PASSWORD).encode()).hexdigest()[:16]
+if 'user' not in st.session_state:
+    st.session_state.user = None
 
-# Check if already logged in via token in query params
-if 'token' in st.query_params and st.query_params['token'][0] == LOGIN_TOKEN:
-    if 'logged_in' not in st.session_state:
-        st.session_state.logged_in = True
-else:
-    if 'logged_in' not in st.session_state:
-        st.session_state.logged_in = False
+if 'dev_mode' not in st.session_state:
+    st.session_state.dev_mode = False
 
-if not st.session_state.logged_in:
+# Simple user database (expandable)
+USERS = {
+    "admin": sha256("snc2006".encode()).hexdigest(),
+    "guest": sha256("guest123".encode()).hexdigest()  # example second user
+}
+
+def check_login():
+    if st.session_state.logged_in:
+        return True
+    if 'token' in st.query_params:
+        token = st.query_params['token'][0]
+        for u, pw_hash in USERS.items():
+            if sha256((u + pw_hash).encode()).hexdigest()[:16] == token:
+                st.session_state.logged_in = True
+                st.session_state.user = u
+                return True
+    return False
+
+if not check_login():
     st.title("Login to Wethr Helper")
     with st.form(key="login_form"):
-        username = st.text_input("Username", placeholder="Enter username")
-        password = st.text_input("Password", type="password", placeholder="Enter password")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
         submit = st.form_submit_button("Login")
 
         if submit:
-            if username == CORRECT_USERNAME and password == CORRECT_PASSWORD:
+            pw_hash = sha256(password.encode()).hexdigest()
+            if username in USERS and USERS[username] == pw_hash:
                 st.session_state.logged_in = True
-                # Add token to query params so refresh keeps you logged in
-                st.query_params["token"] = LOGIN_TOKEN
-                st.success("Logged in successfully! Refreshing...")
+                st.session_state.user = username
+                st.query_params["token"] = sha256((username + pw_hash).encode()).hexdigest()[:16]
+                st.success("Logged in!")
                 st.rerun()
             else:
-                st.error("Incorrect username or password. Try again.")
-    st.stop()  # Stop script until logged in
+                st.error("Incorrect username or password.")
+    st.stop()
+
+# Logout button
+if st.button("Logout"):
+    st.session_state.logged_in = False
+    st.session_state.user = None
+    st.query_params.clear()
+    st.rerun()
+
+# Developer mode toggle
+if st.button("Toggle Developer Mode"):
+    st.session_state.dev_mode = not st.session_state.dev_mode
+    st.rerun()
+
+if st.session_state.dev_mode:
+    st.info("Developer mode ON — extra debug info enabled")
 
 # ==================== DASHBOARD ====================
 st.set_page_config(page_title="Wethr Helper", layout="wide")
@@ -69,16 +97,9 @@ FORECASTS_URL = "https://wethr.net/api/v2/forecasts.php"
 NWS_URL = "https://wethr.net/api/v2/nws_forecasts.php"
 TARGET_MODELS = ["HRRR", "NAM", "NBM", "ECMWF-IFS"]
 MODEL_WEIGHTS_BASE = {'HRRR': 0.35, 'NAM': 0.25, 'NBM': 0.25, 'ECMWF-IFS': 0.15}
-LOG_FILE = "prediction_log.csv"  # Saved in repo
+LOG_FILE = "prediction_log.csv"
 
-@dataclass
-class CityConfig:
-    name: str
-    station_code: str
-    location_name: str
-    timezone: str
-    gridpoint: str
-    lat_lon: str
+COASTAL_CITIES = ["Seattle", "San Francisco", "Miami", "Los Angeles"]  # lower GEFS weight
 
 CITY_PRESETS = [
     CityConfig("Seattle", "KSEA", "KSEA", "America/Los_Angeles", "SEW/125,131", "47.6062,-122.3321"),
@@ -90,10 +111,41 @@ CITY_PRESETS = [
     CityConfig("New York City", "KNYC", "KNYC", "America/New_York", "OKX/97,71", "40.7789,-73.9692"),
     CityConfig("Chicago", "KORD", "KORD", "America/Chicago", "LOT/41,74", "41.8781,-87.6298"),
     CityConfig("Boston", "KBOS", "KBOS", "America/New_York", "BOX/90,71", "42.3601,-71.0589"),
+    CityConfig("Los Angeles", "KLAX", "KLAX", "America/Los_Angeles", "LOX/127,101", "34.0522,-118.2437"),
+    CityConfig("Denver", "KDEN", "KDEN", "America/Denver", "BOU/105,39", "39.7392,-104.9903"),
+    CityConfig("Austin", "KAUS", "KAUS", "America/Chicago", "EWX/97,30", "30.2672,-97.7431"),
 ]
 
 def auth_headers():
     return {"X-API-Key": API_KEY}
+
+def fetch_gefs_last_run_time():
+    try:
+        url = "https://www.nco.ncep.noaa.gov/pmb/nwprod/prodstat"
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        text = r.text
+        match = re.search(r'CURRENT STATUS OF THE NCEP PRODUCTION SUITE AT (\d+ \w+ \d+ \d+:\d+ GMT)', text)
+        if match:
+            return match.group(1)
+        else:
+            # Fallback: approximate last run (GEFS runs every 6 hours)
+            now = datetime.utcnow()
+            hours = (now.hour // 6) * 6
+            return now.replace(hour=hours, minute=0, second=0, microsecond=0).strftime("%d %b %Y %H:%M GMT (fallback)")
+    except Exception as e:
+        now = datetime.utcnow()
+        hours = (now.hour // 6) * 6
+        return now.replace(hour=hours, minute=0, second=0, microsecond=0).strftime("%d %b %Y %H:%M GMT (fallback)")
+
+def is_gefs_stale(last_run_str):
+    try:
+        # Parse the time string (e.g., "04 Feb 2026 12:00 GMT")
+        dt = datetime.strptime(last_run_str.split(" (")[0], "%d %b %Y %H:%M GMT")
+        age_hours = (datetime.utcnow() - dt).total_seconds() / 3600
+        return age_hours > 6, age_hours
+    except:
+        return True, 99  # assume stale if parsing fails
 
 def todays_local_day_range_utc(tz_name):
     tz = ZoneInfo(tz_name)
@@ -200,6 +252,9 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
         "New York City": "KXHIGHTNYC",
         "Chicago": "KXHIGHTCHI",
         "Boston": "KXHIGHTBOS",
+        "Los Angeles": "KXHIGHTLAX",
+        "Denver": "KXHIGHTDEN",
+        "Austin": "KXHIGHTAUS",
     }
     series_ticker = series_ticker_map.get(city_name)
     if not series_ticker:
@@ -257,7 +312,7 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
                 else:
                     closest_key = min(bin_dict, key=lambda k: abs((int(k.split('-')[0]) + int(k.split('-')[1])) / 2 - blend))
                     closest = bin_dict[closest_key]
-                    diff = abs((int(closest_key.split('-')[0]) + int(closest_key.split('-')[1])) / 2 - blend)
+                    diff = abs((int(closest_key.split('-')[0]) + int(k.split('-')[1])) / 2 - blend)
                     snapshot += f"→ Closest: {closest_key} at {closest['yes_prob']:.0%} (Δ {diff:.1f}°F)\n"
             if safe_play_str != "--" and "below" in safe_play_str.lower():
                 try:
@@ -399,12 +454,16 @@ selected_cities = [c.name for c in CITY_PRESETS]
 if st.button("Refresh Data Now"):
     st.rerun()
 
+if st.button("Clear Prediction Log"):
+    open(LOG_FILE, 'w').close()
+    st.success("Log cleared!")
+
 summary_data = []
 gefs_summary = []
 log_rows = []
 
-# Fetch last run time once
 last_gefs_run = fetch_gefs_last_run_time()
+stale, age = is_gefs_stale(last_gefs_run)
 
 for city_name in selected_cities:
     city = next(c for c in CITY_PRESETS if c.name == city_name)
@@ -428,8 +487,8 @@ for city_name in selected_cities:
     if now_hour > 12:
         weights['HRRR'] += 0.1
         weights['NAM'] += 0.1
-        total = sum(weights.values())
-        weights = {k: v/total for k, v in weights.items()}
+    total = sum(weights.values())
+    weights = {k: v/total for k, v in weights.items()}
     blend = sum(weights.get(m, 0) * model_highs.get(m, 0) for m in TARGET_MODELS)
     spread = max(vals) - min(vals)
     std = stdev(vals) if len(vals) > 1 else 0
@@ -469,15 +528,25 @@ for city_name in selected_cities:
     blended_mean = blend
     blended_shift = 0.0
     if gefs_mean is not None:
-        blended_mean = 0.7 * blend + 0.3 * gefs_mean
+        # Dynamic blending: more GEFS late in day
+        gefs_weight = 0.3
+        if now_hour > 15:
+            gefs_weight = 0.4
+        if city_name in COASTAL_CITIES:
+            gefs_weight *= 0.67  # lower weight for coastal cities
+        blended_mean = (1 - gefs_weight) * blend + gefs_weight * gefs_mean
         blended_shift = blended_mean - blend
         shift_note = f"+{blended_shift:.1f}°F" if blended_shift > 0 else f"{blended_shift:.1f}°F"
-        st.info(f"Blended mean: {blended_mean:.1f}°F ({shift_note} from original — 70% your model + 30% GEFS)")
+        st.info(f"Blended mean: {blended_mean:.1f}°F ({shift_note} from original — dynamic weight {gefs_weight:.0%} GEFS)")
     gefs_text = "N/A"
     if gefs_probs:
         sorted_probs = sorted(gefs_probs.items(), key=lambda x: x[1], reverse=True)[:5]
         gefs_text = "<br>".join([f"{bin_range}°F: {prob:.0f}%" for bin_range, prob in sorted_probs])
     gefs_summary.append({"City": city_name, "GEFS Top Probs": gefs_text, "Members": num_members})
+
+    # Divergence warning
+    if obs_high_f is not None and gefs_mean is not None and abs(obs_high_f - gefs_mean) > 5:
+        st.warning(f"Divergence Alert: Observed {obs_high_f}°F is {abs(obs_high_f - gefs_mean):.1f}°F from GEFS mean — local effects likely dominating.")
 
     diff_nws = abs(blend - nws_high) if nws_high else None
     status = "GREEN" if spread <= 3.0 and (diff_nws or 999) <= 1.5 else \
@@ -506,7 +575,9 @@ for city_name in selected_cities:
         "Confidence": prob_in_band,
         "Bin Hit": bin_hit,
         "Spread": round(spread, 1),
-        "NWS Diff": round(diff_nws, 1) if diff_nws is not None else "N/A"
+        "NWS Diff": round(diff_nws, 1) if diff_nws is not None else "N/A",
+        "Adjusted Prediction": round(blended_mean, 1),
+        "GEFS Mean": round(gefs_mean, 1) if gefs_mean else "N/A"
     }
     log_rows.append(log_row)
 
@@ -588,25 +659,32 @@ if gefs_summary:
 # NEW: GEFS Status & Current Adjusted Bin Prediction
 st.markdown("### GEFS Status & Current Adjusted Bin Prediction")
 st.write(f"**Last GEFS Run Time**: {last_gefs_run}")
+if stale:
+    st.warning(f"GEFS data may be stale ({age:.0f} hours old) — consider refreshing later for new run.")
 
 for city_name in selected_cities:
-    # Get GEFS probs and mean from earlier (you already have gefs_probs from loop)
-    # In practice, you'd store them per city in a dict earlier in the loop
-    # For simplicity here, re-fetch or use stored value - adjust as needed
-    lat, lon = [c.lat_lon for c in CITY_PRESETS if c.name == city_name][0].split(',')
-    gefs_probs, _, gefs_mean = fetch_gefs_probs(float(lat), float(lon))
+    if city_name not in city_data:
+        st.write(f"{city_name}: No data available")
+        continue
+
+    data = city_data[city_name]
+    blend = data['blend']
+    gefs_mean = data['gefs_mean']
+    gefs_probs = data['gefs_probs']
+    obs_high_f = data['obs_high_f']
+    rise_rate = data['rise_rate']
 
     if not gefs_probs:
         st.write(f"{city_name}: No GEFS data available")
         continue
 
-    # Simple bias correction: shift all GEFS bins toward your blend + current obs
+    # Bias correction
     bias = 0
-    if obs_high_f is not None:
-        bias += 0.4 * (obs_high_f - gefs_mean)  # pull toward current obs
+    if obs_high_f is not None and gefs_mean is not None:
+        bias += 0.4 * (obs_high_f - gefs_mean)
     if rise_rate > 0:
-        bias += 0.2 * rise_rate * 1.5  # project forward a bit
-    bias = min(max(bias, -3), 3)  # cap bias adjustment
+        bias += 0.2 * rise_rate * 1.5
+    bias = min(max(bias, -3), 3)
 
     adjusted_probs = {}
     for bin_range, prob in gefs_probs.items():
@@ -616,11 +694,9 @@ for city_name in selected_cities:
         new_bin = f"{new_low}-{new_high}"
         adjusted_probs[new_bin] = adjusted_probs.get(new_bin, 0) + prob
 
-    # Sort and get top bins
     sorted_adjusted = sorted(adjusted_probs.items(), key=lambda x: x[1], reverse=True)[:5]
     top_text = "<br>".join([f"{bin_range}°F: {prob:.0f}%" for bin_range, prob in sorted_adjusted])
 
-    # Most likely range (cover ~60–70% probability)
     cumulative = 0
     range_low = None
     range_high = None
@@ -630,7 +706,7 @@ for city_name in selected_cities:
             range_low = low
         range_high = high
         cumulative += prob
-        if cumulative >= 65:  # ~65% coverage
+        if cumulative >= 65:
             break
     likely_range = f"{range_low}–{range_high}°F ({cumulative:.0f}% prob)"
 
