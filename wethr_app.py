@@ -11,6 +11,7 @@ import pandas as pd
 import warnings
 import csv
 from hashlib import sha256
+from dataclasses import dataclass
 
 warnings.filterwarnings("ignore", category=Warning)
 
@@ -20,8 +21,6 @@ except ImportError:
     class ZoneInfo:
         def __init__(self, name):
             self.name = name
-
-from dataclasses import dataclass
 
 # ==================== LOGIN ====================
 CORRECT_USERNAME = "admin"
@@ -56,7 +55,6 @@ if not st.session_state.logged_in:
 # Logout button
 if st.button("Logout"):
     st.session_state.logged_in = False
-    st.session_state.user = None
     st.query_params.clear()
     st.rerun()
 
@@ -73,6 +71,16 @@ NWS_URL = "https://wethr.net/api/v2/nws_forecasts.php"
 TARGET_MODELS = ["HRRR", "NAM", "NBM", "ECMWF-IFS"]
 MODEL_WEIGHTS_BASE = {'HRRR': 0.35, 'NAM': 0.25, 'NBM': 0.25, 'ECMWF-IFS': 0.15}
 LOG_FILE = "prediction_log.csv"
+
+# Define CityConfig BEFORE using it
+@dataclass
+class CityConfig:
+    name: str
+    station_code: str
+    location_name: str
+    timezone: str
+    gridpoint: str
+    lat_lon: str
 
 CITY_PRESETS = [
     CityConfig("Seattle", "KSEA", "KSEA", "America/Los_Angeles", "SEW/125,131", "47.6062,-122.3321"),
@@ -99,7 +107,6 @@ def fetch_gefs_last_run_time():
         if match:
             return match.group(1)
         else:
-            # Fallback
             now = datetime.utcnow()
             hours = (now.hour // 6) * 6
             return now.replace(hour=hours, minute=0, second=0, microsecond=0).strftime("%d %b %Y %H:%M GMT (fallback)")
