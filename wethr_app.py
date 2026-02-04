@@ -11,11 +11,6 @@ import pandas as pd
 import warnings
 import csv
 from hashlib import sha256
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 
 warnings.filterwarnings("ignore", category=Warning)
 
@@ -28,77 +23,42 @@ except ImportError:
 
 from dataclasses import dataclass
 
-# ==================== LOGIN & SESSION ====================
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
+# ==================== LOGIN ====================
+CORRECT_USERNAME = "admin"
+CORRECT_PASSWORD = "snc2006"
 
-if 'user' not in st.session_state:
-    st.session_state.user = None
+LOGIN_TOKEN = sha256((CORRECT_USERNAME + CORRECT_PASSWORD).encode()).hexdigest()[:16]
 
-if 'dev_mode' not in st.session_state:
-    st.session_state.dev_mode = False
+if 'token' in st.query_params and st.query_params['token'][0] == LOGIN_TOKEN:
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = True
+else:
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
 
-# Simple user database (expandable)
-USERS = {
-    "admin": sha256("snc2006".encode()).hexdigest(),
-    "guest": sha256("guest123".encode()).hexdigest()  # example second user
-}
-
-def check_login():
-    if st.session_state.logged_in:
-        return True
-    return False
-
-if not check_login():
+if not st.session_state.logged_in:
     st.title("Login to Wethr Helper")
     with st.form(key="login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
+        username = st.text_input("Username", placeholder="Enter username")
+        password = st.text_input("Password", type="password", placeholder="Enter password")
         submit = st.form_submit_button("Login")
 
         if submit:
-            pw_hash = sha256(password.encode()).hexdigest()
-            if username in USERS and USERS[username] == pw_hash:
+            if username == CORRECT_USERNAME and password == CORRECT_PASSWORD:
                 st.session_state.logged_in = True
-                st.session_state.user = username
-                st.success("Logged in!")
+                st.query_params["token"] = LOGIN_TOKEN
+                st.success("Logged in! Refreshing...")
                 st.rerun()
             else:
-                st.error("Incorrect username or password.")
+                st.error("Incorrect credentials.")
     st.stop()
 
 # Logout button
 if st.button("Logout"):
     st.session_state.logged_in = False
     st.session_state.user = None
-    st.session_state.dev_mode = False
     st.query_params.clear()
     st.rerun()
-
-# Password change form (for admin)
-if st.session_state.user == "admin":
-    with st.expander("Change Password"):
-        with st.form(key="change_pw"):
-            new_pw = st.text_input("New Password", type="password")
-            confirm_pw = st.text_input("Confirm New Password", type="password")
-            submit_pw = st.form_submit_button("Update Password")
-
-            if submit_pw:
-                if new_pw == confirm_pw and new_pw:
-                    USERS["admin"] = sha256(new_pw.encode()).hexdigest()
-                    st.success("Password updated! Log in again.")
-                    st.session_state.logged_in = False
-                    st.rerun()
-                else:
-                    st.error("Passwords don't match or empty.")
-
-# Developer mode toggle
-if st.button("Toggle Developer Mode"):
-    st.session_state.dev_mode = not st.session_state.dev_mode
-    st.rerun()
-
-if st.session_state.dev_mode:
-    st.info("Developer mode ON — extra debug info enabled")
 
 # ==================== DASHBOARD ====================
 st.set_page_config(page_title="Wethr Helper", layout="wide")
@@ -113,18 +73,6 @@ NWS_URL = "https://wethr.net/api/v2/nws_forecasts.php"
 TARGET_MODELS = ["HRRR", "NAM", "NBM", "ECMWF-IFS"]
 MODEL_WEIGHTS_BASE = {'HRRR': 0.35, 'NAM': 0.25, 'NBM': 0.25, 'ECMWF-IFS': 0.15}
 LOG_FILE = "prediction_log.csv"
-EMAIL_FROM = "your_email@gmail.com"  # Replace with your email
-EMAIL_PASS = "your_app_password"  # Replace with your app password (for Gmail)
-EMAIL_TO = "your_email@gmail.com"  # Your email for sending
-
-@dataclass
-class CityConfig:
-    name: str
-    station_code: str
-    location_name: str
-    timezone: str
-    gridpoint: str
-    lat_lon: str
 
 CITY_PRESETS = [
     CityConfig("Seattle", "KSEA", "KSEA", "America/Los_Angeles", "SEW/125,131", "47.6062,-122.3321"),
@@ -136,33 +84,6 @@ CITY_PRESETS = [
     CityConfig("New York City", "KNYC", "KNYC", "America/New_York", "OKX/97,71", "40.7789,-73.9692"),
     CityConfig("Chicago", "KORD", "KORD", "America/Chicago", "LOT/41,74", "41.8781,-87.6298"),
     CityConfig("Boston", "KBOS", "KBOS", "America/New_York", "BOX/90,71", "42.3601,-71.0589"),
-    # Added from your list
-    CityConfig("Chicago Midway", "KMDW", "KMDW", "America/Chicago", "LOT/41,74", "41.8781,-87.6298"),
-    CityConfig("Philadelphia", "KPHL", "KPHL", "America/New_York", "PHI/97,71", "39.9526,-75.1652"),
-    CityConfig("Miami", "KMIA", "KMIA", "America/New_York", "MFL/64,31", "25.7617,-80.1918"),
-    CityConfig("Los Angeles", "KLAX", "KLAX", "America/Los_Angeles", "LOX/94,70", "33.9416,-118.4085"),
-    CityConfig("Denver", "KDEN", "KDEN", "America/Denver", "BOU/75,57", "39.7392,-104.9903"),
-    CityConfig("Austin", "KAUS", "KAUS", "America/Chicago", "EWX/84,57", "30.2672,-97.7431"),
-    CityConfig("New York (Central Park)", "KNYC", "KNYC", "America/New_York", "OKX/97,71", "40.7789,-73.9692"),
-    CityConfig("Dallas/Fort Worth", "KDFW", "KDFW", "America/Chicago", "FWD/76,34", "32.7767,-96.7969"),
-    CityConfig("New Orleans", "KMSY", "KMSY", "America/Chicago", "LIX/76,34", "29.9511,-90.0715"),
-    CityConfig("New York LaGuardia", "KLGA", "KLGA", "America/New_York", "OKX/97,71", "40.7794,-73.8803"),
-    CityConfig("Dallas Love Field", "KDAL", "KDAL", "America/Chicago", "FWD/76,34", "32.7767,-96.7969"),
-    CityConfig("Houston Hobby", "KHOU", "KHOU", "America/Chicago", "HGX/76,34", "29.7604,-95.3698"),
-    CityConfig("Seattle", "KSEA", "KSEA", "America/Los_Angeles", "SEW/125,131", "47.6062,-122.3321"),
-    CityConfig("San Francisco", "KSFO", "KSFO", "America/Los_Angeles", "MTR/94,70", "37.7749,-122.4194"),
-    CityConfig("Las Vegas", "KLAS", "KLAS", "America/Los_Angeles", "VEF/127,101", "36.1699,-115.1398"),
-    CityConfig("Phoenix", "KPHX", "KPHX", "America/Phoenix", "PSR/127,101", "33.4484,-112.0740"),
-    CityConfig("San Antonio", "KSAT", "KSAT", "America/Chicago", "EWX/84,57", "29.4241,-98.4936"),
-    CityConfig("Washington D.C.", "KDCA", "KDCA", "America/New_York", "LWX/97,71", "38.9072,-77.0369"),
-    CityConfig("Charlotte", "KCLT", "KCLT", "America/New_York", "GSP/90,71", "35.2271,-80.8431"),
-    CityConfig("Boston", "KBOS", "KBOS", "America/New_York", "BOX/90,71", "42.3601,-71.0589"),
-    CityConfig("Nashville", "KBNA", "KBNA", "America/Chicago", "OHX/76,34", "36.1627,-86.7878"),
-    CityConfig("Atlanta", "KATL", "KATL", "America/New_York", "FFC/90,71", "33.7490,-84.3880"),
-    CityConfig("Jacksonville", "KJAX", "KJAX", "America/New_York", "JAX/90,71", "30.3322,-81.6557"),
-    CityConfig("Oklahoma City", "KOKC", "KOKC", "America/Chicago", "OUN/76,34", "35.4676,-97.5164"),
-    CityConfig("Detroit", "KDTW", "KDTW", "America/Detroit", "DTX/97,71", "42.3314,-83.0458"),
-    CityConfig("Minneapolis", "KMSP", "KMSP", "America/Chicago", "MPX/97,71", "44.9778,-93.2650"),
 ]
 
 def auth_headers():
@@ -178,7 +99,7 @@ def fetch_gefs_last_run_time():
         if match:
             return match.group(1)
         else:
-            # Fallback: approximate last run (GEFS runs every 6 hours)
+            # Fallback
             now = datetime.utcnow()
             hours = (now.hour // 6) * 6
             return now.replace(hour=hours, minute=0, second=0, microsecond=0).strftime("%d %b %Y %H:%M GMT (fallback)")
@@ -189,12 +110,12 @@ def fetch_gefs_last_run_time():
 
 def is_gefs_stale(last_run_str):
     try:
-        # Parse the time string (e.g., "04 Feb 2026 12:00 GMT")
-        dt = datetime.strptime(last_run_str.split(" (")[0], "%d %b %Y %H:%M GMT")
+        dt_str = last_run_str.split(" (")[0]
+        dt = datetime.strptime(dt_str, "%d %b %Y %H:%M GMT")
         age_hours = (datetime.utcnow() - dt).total_seconds() / 3600
         return age_hours > 6, age_hours
     except:
-        return True, 99  # assume stale if parsing fails
+        return True, 99
 
 def todays_local_day_range_utc(tz_name):
     tz = ZoneInfo(tz_name)
@@ -301,9 +222,6 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
         "New York City": "KXHIGHTNYC",
         "Chicago": "KXHIGHTCHI",
         "Boston": "KXHIGHTBOS",
-        "Los Angeles": "KXHIGHTLAX",
-        "Denver": "KXHIGHTDEN",
-        "Austin": "KXHIGHTAUS",
     }
     series_ticker = series_ticker_map.get(city_name)
     if not series_ticker:
@@ -361,7 +279,7 @@ def fetch_kalshi_market(city_name, blend, status, exact_bin_str, safe_play_str, 
                 else:
                     closest_key = min(bin_dict, key=lambda k: abs((int(k.split('-')[0]) + int(k.split('-')[1])) / 2 - blend))
                     closest = bin_dict[closest_key]
-                    diff = abs((int(closest_key.split('-')[0]) + int(closest_key.split('-')[1])) / 2 - blend)
+                    diff = abs((int(closest_key.split('-')[0]) + int(k.split('-')[1])) / 2 - blend)
                     snapshot += f"→ Closest: {closest_key} at {closest['yes_prob']:.0%} (Δ {diff:.1f}°F)\n"
             if safe_play_str != "--" and "below" in safe_play_str.lower():
                 try:
@@ -394,9 +312,9 @@ def fetch_gefs_probs(lat, lon):
             return {}, 0, None
 
         daily_maxes = []
-        step = max(1, len(hourly_temps) // 30)  # Prevent zero step
+        step = max(1, len(hourly_temps) // 30)
         for i in range(0, len(hourly_temps), step):
-            member_temps = hourly_temps[i:i+48]  # Approx 48 hours
+            member_temps = hourly_temps[i:i+48]
             if member_temps:
                 daily_maxes.append(max(member_temps))
 
@@ -406,7 +324,7 @@ def fetch_gefs_probs(lat, lon):
         bin_counts = Counter(round(max_temp) for max_temp in daily_maxes)
         total = len(daily_maxes)
         probs = {f"{k}-{k+1}": (count / total * 100) for k, count in sorted(bin_counts.items())}
-        gefs_mean = sum(daily_maxes) / total  # GEFS average high
+        gefs_mean = sum(daily_maxes) / total
         return probs, total, gefs_mean
     except Exception as e:
         st.warning(f"GFS ensemble error: {e}")
@@ -434,14 +352,12 @@ def make_time_note(city: CityConfig, obs, band):
     except:
         return "Observed high not numeric."
 
-    # Early day override (before 11 AM) — always upside potential
     if now_local.hour <= 11:
         if obs_high_f < (band[0] if band else 50) - 3:
             return "Early in the day and obs are still well below the suggested band; plenty of runway left."
         else:
             return "Early in the day; temps are starting to rise, but plenty of time left for the high."
 
-    # Midday (11 AM – 4 PM)
     if 11 <= now_local.hour < 16:
         if obs_high_f < (band[0] if band else 50):
             return "Midday and obs are still below the suggested band; upside potential remains."
@@ -450,13 +366,12 @@ def make_time_note(city: CityConfig, obs, band):
         else:
             return "Midday and obs have exceeded the suggested band; watch for overachievement risk."
 
-    # Late day (after 4 PM) — check if high is already set
     if dt_high_utc is not None:
         dt_high_local = dt_high_utc.astimezone(tz)
         hours_since_high = (now_local - dt_high_local).total_seconds() / 3600.0
         if hours_since_high >= 3:
             return "Observed high occurred several hours ago; today's high is likely already set."
-    
+
     if band and obs_high_f >= band[1]:
         return "Late in the day and obs are at/above the suggested band; high is likely in."
     elif band and obs_high_f < band[0]:
@@ -507,7 +422,6 @@ summary_data = []
 gefs_summary = []
 log_rows = []
 
-# Fetch last run time once
 last_gefs_run = fetch_gefs_last_run_time()
 
 for city_name in selected_cities:
@@ -694,22 +608,14 @@ st.markdown("### GEFS Status & Current Adjusted Bin Prediction")
 st.write(f"**Last GEFS Run Time**: {last_gefs_run}")
 
 for city_name in selected_cities:
-    if city_name not in city_data:
-        st.write(f"{city_name}: No data available")
-        continue
-
-    data = city_data[city_name]
-    blend = data['blend']
-    gefs_mean = data['gefs_mean']
-    gefs_probs = data['gefs_probs']
-    obs_high_f = data['obs_high_f']
-    rise_rate = data['rise_rate']
+    lat, lon = [c.lat_lon for c in CITY_PRESETS if c.name == city_name][0].split(',')
+    gefs_probs, _, gefs_mean = fetch_gefs_probs(float(lat), float(lon))
 
     if not gefs_probs:
         st.write(f"{city_name}: No GEFS data available")
         continue
 
-    # Simple bias correction: shift all GEFS bins toward your blend + current obs
+    # Bias correction using current obs and rise rate
     bias = 0
     if obs_high_f is not None and gefs_mean is not None:
         bias += 0.4 * (obs_high_f - gefs_mean)
@@ -725,11 +631,9 @@ for city_name in selected_cities:
         new_bin = f"{new_low}-{new_high}"
         adjusted_probs[new_bin] = adjusted_probs.get(new_bin, 0) + prob
 
-    # Sort and get top bins
     sorted_adjusted = sorted(adjusted_probs.items(), key=lambda x: x[1], reverse=True)[:5]
     top_text = "<br>".join([f"{bin_range}°F: {prob:.0f}%" for bin_range, prob in sorted_adjusted])
 
-    # Most likely range (cover ~60–70% probability)
     cumulative = 0
     range_low = None
     range_high = None
