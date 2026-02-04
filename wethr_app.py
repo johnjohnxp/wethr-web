@@ -395,6 +395,7 @@ if st.button("Refresh Data Now"):
 summary_data = []
 gefs_summary = []  # For consolidated GEFS table
 log_rows = []  # For CSV logging
+
 for city_name in selected_cities:
     city = next(c for c in CITY_PRESETS if c.name == city_name)
 
